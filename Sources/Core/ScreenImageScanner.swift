@@ -57,6 +57,8 @@ public final class ScreenImageScanner {
     private var lastThumbnails: [UInt32: [UInt8]] = [:]
     private var unchangedScans = 0
     private var suspectPending = false
+    private var frontIsSearchResults = false     // set each scan: a search engine's page is in front
+    private var lastIgnoredLog = Date.distantPast
 
     private let queue = DispatchQueue(label: "com.wordblocker.imagescan", qos: .utility)
     private var observers: [NSObjectProtocol] = []
@@ -152,12 +154,23 @@ public final class ScreenImageScanner {
             guard changed || suspectPending else { continue }
 
             let scores = classify(image)
-            switch ImageScanLogic.verdict(scores: scores, previouslySuspect: suspectPending) {
+            let strict = frontIsSearchResults
+            let verdict = ImageScanLogic.verdict(scores: scores, previouslySuspect: suspectPending, onSearchResults: strict)
+            switch verdict {
             case .clear:
+                // A score the normal rules would have acted on, ignored because this is a search page. Logged
+                // (at most every 20 s) so the log shows what the stricter rule saved.
+                if strict, (scores.max() ?? 0) >= ImageScanLogic.suspectScore,
+                   Date().timeIntervalSince(lastIgnoredLog) > 20 {
+                    lastIgnoredLog = Date()
+                    await logScan("ignored (search page, below the strict bar)", scores: scores, strict: strict)
+                }
                 suspectPending = false
             case .suspect:
+                if !suspectPending { await logScan("suspect", scores: scores, strict: strict) }
                 suspectPending = true
             case .explicit:
+                await logScan("EXPLICIT, tab closed", scores: scores, strict: strict)
                 suspectPending = false
                 lastThumbnails.removeAll()
                 await respond()
@@ -193,6 +206,7 @@ public final class ScreenImageScanner {
 
         // Everyday sites (YouTube, Wikipedia, shops, news…) are never judged by the image model: it
         // misreads video frames and product photos, and the user only wants adult sites blocked.
+        frontIsSearchResults = false
         if let id = frontmost, BrowserLockdown.isMonitored(id) {
             let page = await MainActor.run { BrowserMonitor.shared.frontPageURL }
             if let page = page, TrustedSites.isTrusted(urlOrHost: page) {
@@ -200,6 +214,8 @@ public final class ScreenImageScanner {
                 setStatus(.paused)
                 return false
             }
+            // Search results are a mosaic of thumbnails: the model gets a stricter bar there.
+            frontIsSearchResults = page.map { ImageScanLogic.isSearchResultsPage($0) } ?? false
         }
 
         setStatus(.watching)
@@ -306,6 +322,18 @@ public final class ScreenImageScanner {
             scores.append(Double(explicit?.confidence ?? 0))
         }
         return scores
+    }
+
+    // MARK: - Log
+
+    /// Writes what the model saw to the block log (`blocks.log`): the five scores (whole screen, then the
+    /// four quarters), which app and page were in front, and whether the strict search-page bar applied.
+    private func logScan(_ what: String, scores: [Double], strict: Bool) async {
+        let (page, app) = await MainActor.run {
+            (BrowserMonitor.shared.frontPageURL, NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")
+        }
+        let list = scores.map { String(format: "%.4f", $0) }.joined(separator: ", ")
+        BlockLog.record("image-scanner", "\(what)  scores(whole, top-left, top-right, bottom-left, bottom-right)=[\(list)]  strict=\(strict)  app=\(app)  page=\(BlockLog.describePage(page))")
     }
 
     // MARK: - Response

@@ -356,6 +356,15 @@ public final class BrowserMonitor {
         let target = BlockTarget(domain: domain, pid: pid, bundleId: bundleId,
                                  window: hit.window, title: hit.title)
 
+        // Which check fired, for the block log.
+        if hit.url.isEmpty {
+            BlockLog.record("website", "adult-title  tab closed  title=\(String((hit.title ?? "").prefix(80)))")
+        } else if AdultSiteMatcher.isAdult(urlOrHost: hit.url) {
+            BlockLog.record("website", "adult-site  tab closed  page=\(BlockLog.describePage(hit.url))")
+        } else {
+            BlockLog.record("website", "adult-search  tab closed  page=\(BlockLog.describePage(hit.url))")
+        }
+
         showAdultNote()
 
         // Matching tabs by address is only safe for a non-empty key that can sit inside an AppleScript string.
@@ -400,11 +409,15 @@ public final class BrowserMonitor {
             guard let self = self else { return }
             let text = self.collectPageText(window: hit.window, title: hit.title)
             let flagged = AdultContentScorer.isAdultContent(text)
+            let analysis = flagged ? AdultContentScorer.analyse(text) : nil
 
             DispatchQueue.main.async {
                 self.contentScanInFlight = false
                 guard flagged,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                if let analysis = analysis {
+                    BlockLog.record("website", "page-text  tab closed  score=\(analysis.score) distinct-terms=\(analysis.distinct)  page=\(BlockLog.describePage(hit.url))")
+                }
                 self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId)
             }
         }

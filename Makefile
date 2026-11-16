@@ -31,6 +31,7 @@ test:
 		Sources/Core/TrustedSites.swift \
 		Sources/Core/Guardian.swift \
 		Sources/Core/Watchdog.swift \
+		Sources/Core/BlockLog.swift \
 		Sources/Core/ImageScanLogic.swift \
 		Tests/EngineTests.swift \
 		-o Tests/run_tests && ./Tests/run_tests && rm Tests/run_tests

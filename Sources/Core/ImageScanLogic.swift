@@ -13,6 +13,13 @@ public enum ImageScanLogic {
     /// A region this likely to be explicit is checked again on the next scan; two in a row is acted on.
     public static let suspectScore = 0.93
 
+    /// On a search engine's results page the screen is a mosaic of small photos, which the model was not
+    /// trained on and misreads far more often than a single picture (a search for "stanford students"
+    /// closed a tab). The address and the search words are already checked by text rules there, so the
+    /// picture model needs to be much more sure before it may act.
+    public static let searchHitScore = 0.998
+    public static let searchSuspectScore = 0.995
+
     /// How much the screen must change (mean brightness difference of a tiny thumbnail, 0...1) before the
     /// model is run again. About 1.5% is a few brightness levels on average: a new picture or a scroll
     /// clears it, a blinking cursor or a clock does not.
@@ -66,11 +73,24 @@ public enum ImageScanLogic {
     }
 
     /// `scores` are the model's "explicit" probabilities for each tile of one scan.
-    public static func verdict(scores: [Double], previouslySuspect: Bool) -> Verdict {
+    public static func verdict(scores: [Double], previouslySuspect: Bool, onSearchResults: Bool = false) -> Verdict {
         let top = scores.max() ?? 0
-        if top >= hitScore { return .explicit }
-        if top >= suspectScore { return previouslySuspect ? .explicit : .suspect }
+        let hit = onSearchResults ? searchHitScore : hitScore
+        let suspect = onSearchResults ? searchSuspectScore : suspectScore
+        if top >= hit { return .explicit }
+        if top >= suspect { return previouslySuspect ? .explicit : .suspect }
         return .clear
+    }
+
+    // MARK: - Search results pages
+
+    /// True for a search engine's page (Google, Bing, DuckDuckGo and similar), where the screen is a grid of
+    /// result thumbnails.
+    public static func isSearchResultsPage(_ urlOrHost: String) -> Bool {
+        guard let host = AdultSiteMatcher.host(from: urlOrHost) else { return false }
+        if host == "search.yahoo.com" || host == "search.brave.com" { return true }
+        let engines: Set<String> = ["google", "bing", "duckduckgo", "ecosia", "startpage", "yandex", "baidu"]
+        return host.split(separator: ".").contains { engines.contains(String($0)) }
     }
 
     // MARK: - Pacing

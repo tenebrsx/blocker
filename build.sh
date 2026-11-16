@@ -57,6 +57,7 @@ SOURCES=(
     "Sources/Core/AdultDomainList.swift"
     "Sources/Core/AdultContentScorer.swift"
     "Sources/Core/BrowserLockdown.swift"
+    "Sources/Core/BlockLog.swift"
     "Sources/Core/ImageScanLogic.swift"
     "Sources/Core/ScreenImageScanner.swift"
     "Sources/Core/LaunchAgentPlist.swift"

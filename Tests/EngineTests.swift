@@ -510,6 +510,32 @@ struct TestRunner {
         assertTest(ImageScanLogic.verdict(scores: [0.9], previouslySuspect: true) == .clear, "...even on a second look")
         assertTest(ImageScanLogic.verdict(scores: [], previouslySuspect: false) == .clear, "No scores means clear")
 
+        // Search results pages (a mosaic of thumbnails) get a much stricter bar.
+        assertTest(ImageScanLogic.verdict(scores: [0.995], previouslySuspect: false, onSearchResults: false) == .explicit, "Off a search page 0.995 acts at once")
+        assertTest(ImageScanLogic.verdict(scores: [0.995], previouslySuspect: false, onSearchResults: true) == .suspect, "On a search page 0.995 is only suspect")
+        assertTest(ImageScanLogic.verdict(scores: [0.995], previouslySuspect: true, onSearchResults: true) == .explicit, "...and acts if it holds on the next look")
+        assertTest(ImageScanLogic.verdict(scores: [0.99], previouslySuspect: true, onSearchResults: true) == .clear, "On a search page 0.99 never acts, even twice")
+        assertTest(ImageScanLogic.verdict(scores: [0.9985], previouslySuspect: false, onSearchResults: true) == .explicit, "A near-certain score still acts on a search page")
+        assertTest(ImageScanLogic.verdict(scores: [0.95], previouslySuspect: false) == .suspect, "The default (not a search page) is unchanged")
+        for page in ["https://www.google.com/search?q=stanford+students&udm=2", "https://www.google.co.uk/search?q=x&tbm=isch",
+                     "https://www.bing.com/images/search?q=x", "https://duckduckgo.com/?q=x&iax=images", "https://search.brave.com/images?q=x"] {
+            assertTest(ImageScanLogic.isSearchResultsPage(page), "Search results page: \(page)")
+        }
+        for page in ["https://www.example.com/gallery", "https://www.reddit.com/r/pics", "https://notgoogle.com/", "about:blank", ""] {
+            assertTest(!ImageScanLogic.isSearchResultsPage(page), "Not a search results page: \(page)")
+        }
+
+        // The block log: what is recorded, and that it never keeps the search words.
+        let logLine = BlockLog.line(date: Date(timeIntervalSince1970: 0), reason: "image-scanner", detail: "a\nb")
+        assertTest(logLine.hasSuffix("  image-scanner  a b") && !logLine.contains("\n"), "A log entry is one line: reason, then detail")
+        assertTest(BlockLog.describePage("https://www.google.com/search?q=stanford+students&udm=2#top") == "www.google.com/search", "Addresses are logged without the query string or fragment")
+        assertTest(BlockLog.describePage(nil) == "(address unreadable)" && BlockLog.describePage("  ") == "(address unreadable)", "A missing address is said so")
+        assertTest(BlockLog.describePage("https://x.com/" + String(repeating: "a", count: 300)).count == 100, "Long addresses are shortened")
+        let manyLines = (1...2000).map { "line \($0) " + String(repeating: "x", count: 60) }.joined(separator: "\n") + "\n"
+        let trimmedLog = BlockLog.trimmed(manyLines, maxBytes: 10_000)
+        assertTest(trimmedLog.utf8.count <= 10_000 && trimmedLog.hasSuffix("line 2000 " + String(repeating: "x", count: 60) + "\n") && !trimmedLog.contains("line 1 "), "A long log keeps only the newest lines")
+        assertTest(BlockLog.trimmed("short\n", maxBytes: 10_000) == "short\n", "A short log is left alone")
+
         assertTest(ImageScanLogic.interval(unchangedScans: 0, lowPower: false) == 1.5, "Scans every 1.5s while the screen changes")
         assertTest(ImageScanLogic.interval(unchangedScans: 5, lowPower: false) == 3.0, "Backs off to 3s when the screen is still")
         assertTest(ImageScanLogic.interval(unchangedScans: 50, lowPower: false) == 6.0, "Backs off to 6s when it stays still")
