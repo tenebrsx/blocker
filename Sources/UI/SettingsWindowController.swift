@@ -23,8 +23,19 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     // Top Controls
     private var permissionBanner: NSTextField!
-    private var permissionHintLabel: NSTextField!
     private var permissionButton: NSButton!
+    private var settingsTabView: NSTabView!
+
+    // Setup tab: one status row per item
+    private var accessIcon: NSTextField!
+    private var accessDetail: NSTextField!
+    private var accessButton: NSButton!
+    private var screenIcon: NSTextField!
+    private var screenDetail: NSTextField!
+    private var screenButton: NSButton!
+    private var modelIcon: NSTextField!
+    private var modelDetail: NSTextField!
+    private var modelButton: NSButton!
     private var enableCheckbox: NSButton!
     private var soundCheckbox: NSButton!
     private var fuzzyCheckbox: NSButton!
@@ -68,7 +79,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     private convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 838),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 530),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -85,99 +96,165 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = contentView
 
-        var currentY: CGFloat = 793
-
-        // Title Header
+        // Layout, top to bottom: title, one-line status, tabs, test area. (Window is 580 x 530.)
         let titleLabel = NSTextField(labelWithString: "🛡️ Word Blocker")
         titleLabel.font = NSFont.systemFont(ofSize: 20, weight: .bold)
-        titleLabel.frame = NSRect(x: 24, y: currentY, width: 530, height: 28)
+        titleLabel.frame = NSRect(x: 24, y: 478, width: 530, height: 28)
         contentView.addSubview(titleLabel)
 
-        currentY -= 36
-
-        // Permission Banner
+        // One-line status. The Setup tab has the details.
         permissionBanner = NSTextField(labelWithString: "")
         permissionBanner.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        permissionBanner.frame = NSRect(x: 24, y: currentY, width: 370, height: 26)
+        permissionBanner.frame = NSRect(x: 24, y: 442, width: 370, height: 26)
         contentView.addSubview(permissionBanner)
 
-        permissionButton = NSButton(title: "Grant Permission", target: self, action: #selector(permissionButtonClicked))
+        permissionButton = NSButton(title: "Open Setup", target: self, action: #selector(openSetupTab))
         permissionButton.bezelStyle = .rounded
-        permissionButton.frame = NSRect(x: 400, y: currentY - 2, width: 154, height: 28)
+        permissionButton.frame = NSRect(x: 400, y: 440, width: 154, height: 28)
         contentView.addSubview(permissionButton)
 
-        currentY -= 20
+        contentView.addSubview(createDivider(frame: NSRect(x: 24, y: 432, width: 532, height: 1)))
 
-        // Permission Troubleshooting Hint
-        permissionHintLabel = NSTextField(labelWithString: "💡 Tip: If already listed in System Settings, toggle it OFF & ON once to refresh.")
-        permissionHintLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        permissionHintLabel.textColor = .secondaryLabelColor
-        permissionHintLabel.frame = NSRect(x: 24, y: currentY, width: 530, height: 16)
-        contentView.addSubview(permissionHintLabel)
-
-        currentY -= 22
-
-        // Divider
-        let div1 = createDivider(frame: NSRect(x: 24, y: currentY, width: 532, height: 1))
-        contentView.addSubview(div1)
-
-        currentY -= 28
-
-        // General Switches
-        enableCheckbox = NSButton(checkboxWithTitle: "Enable System-Wide Word Blocking", target: self, action: #selector(enableToggled(_:)))
-        enableCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        enableCheckbox.state = WordStore.shared.isEnabled ? .on : .off
-        enableCheckbox.frame = NSRect(x: 24, y: currentY, width: 360, height: 22)
-        contentView.addSubview(enableCheckbox)
-
-        currentY -= 24
-
-        soundCheckbox = NSButton(checkboxWithTitle: "Play sound alert on auto-delete", target: self, action: #selector(soundToggled(_:)))
-        soundCheckbox.state = WordStore.shared.playAlertSound ? .on : .off
-        soundCheckbox.frame = NSRect(x: 24, y: currentY, width: 360, height: 22)
-        contentView.addSubview(soundCheckbox)
-
-        currentY -= 24
-
-        popupNoteCheckbox = NSButton(checkboxWithTitle: "Show Pop-Up Note when blocked words are typed", target: self, action: #selector(popupNoteToggled(_:)))
-        popupNoteCheckbox.state = WordStore.shared.showPopupNotes ? .on : .off
-        popupNoteCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
-        contentView.addSubview(popupNoteCheckbox)
-
-        currentY -= 24
-
-        fuzzyCheckbox = NSButton(checkboxWithTitle: "Detect leetspeak & character evasions (e.g. b444aad, w0rd)", target: self, action: #selector(fuzzyToggled(_:)))
-        fuzzyCheckbox.state = WordStore.shared.isFuzzyEnabled ? .on : .off
-        fuzzyCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
-        contentView.addSubview(fuzzyCheckbox)
-
-        currentY -= 24
-
-        loginCheckbox = NSButton(checkboxWithTitle: "Start at login, and relaunch if force-quit", target: self, action: #selector(loginToggled(_:)))
-        loginCheckbox.state = LoginItem.isEnabled ? .on : .off
-        loginCheckbox.toolTip = "Runs Word Blocker whenever you log in and brings it straight back if it is force-quit (Activity Monitor, kill). Turning this on or off restarts the app once. Turning it off needs the math challenge."
-        loginCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
-        contentView.addSubview(loginCheckbox)
-
-        currentY -= 24
-
-        watchdogCheckbox = NSButton(checkboxWithTitle: "Unkillable mode (needs your Mac password)", target: self, action: #selector(watchdogToggled(_:)))
-        watchdogCheckbox.state = Watchdog.isInstalled ? .on : .off
-        watchdogCheckbox.toolTip = "Installs a small system helper that runs as an administrator, so Force Quit and kill can't stop it, and it reopens Word Blocker within about half a second if the app is killed. With it on, quitting Word Blocker needs the math challenge and your Mac password. Turning it off needs both too."
-        watchdogCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
-        contentView.addSubview(watchdogCheckbox)
-
-        currentY -= 330
+        var currentY: CGFloat = 98
 
         // NSTabView Container
         let tabView = NSTabView(frame: NSRect(x: 24, y: currentY, width: 532, height: 320))
         tabView.tabViewType = .topTabsBezelBorder
+        settingsTabView = tabView
+
+        func caption(_ text: String, frame: NSRect) -> NSTextField {
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.frame = frame
+            return label
+        }
+
+        func sectionHeader(_ text: String, frame: NSRect) -> NSTextField {
+            let label = NSTextField(labelWithString: text.uppercased())
+            label.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            label.textColor = .tertiaryLabelColor
+            label.frame = frame
+            return label
+        }
+
+        // -------------------------------------------------------------
+        // Setup: what the app needs, with live status and a button for each item
+        // -------------------------------------------------------------
+        let setupTab = NSTabViewItem(identifier: "SetupTab")
+        setupTab.label = "Setup"
+        let setupView = NSView(frame: tabView.contentRect)
+
+        func addSetupRow(y: CGFloat, title: String, tag: String, buttonTitle: String, action: Selector)
+            -> (icon: NSTextField, detail: NSTextField, button: NSButton) {
+            let icon = NSTextField(labelWithString: "")
+            icon.font = NSFont.systemFont(ofSize: 18)
+            icon.alignment = .center
+            icon.frame = NSRect(x: 12, y: y + 36, width: 30, height: 24)
+            setupView.addSubview(icon)
+
+            let heading = NSMutableAttributedString(
+                string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+            heading.append(NSAttributedString(
+                string: "   " + tag,
+                attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+            let headingField = NSTextField(labelWithAttributedString: heading)
+            headingField.frame = NSRect(x: 48, y: y + 38, width: 350, height: 18)
+            setupView.addSubview(headingField)
+
+            let detail = caption("", frame: NSRect(x: 48, y: y, width: 340, height: 36))
+            setupView.addSubview(detail)
+
+            let button = NSButton(title: buttonTitle, target: self, action: action)
+            button.bezelStyle = .rounded
+            button.frame = NSRect(x: 396, y: y + 16, width: 112, height: 28)
+            setupView.addSubview(button)
+            return (icon, detail, button)
+        }
+
+        let accessRow = addSetupRow(y: 204, title: "Accessibility", tag: "Required",
+                                    buttonTitle: "Grant…", action: #selector(permissionButtonClicked))
+        accessIcon = accessRow.icon; accessDetail = accessRow.detail; accessButton = accessRow.button
+
+        let screenRow = addSetupRow(y: 134, title: "Screen Recording", tag: "Optional, for the image scanner",
+                                    buttonTitle: "Open Settings", action: #selector(screenRecordingButtonClicked))
+        screenIcon = screenRow.icon; screenDetail = screenRow.detail; screenButton = screenRow.button
+
+        let modelRow = addSetupRow(y: 64, title: "Image scanner model", tag: "Optional",
+                                   buttonTitle: "How to install", action: #selector(modelHelpClicked))
+        modelIcon = modelRow.icon; modelDetail = modelRow.detail; modelButton = modelRow.button
+
+        setupView.addSubview(createDivider(frame: NSRect(x: 14, y: 54, width: 490, height: 1)))
+        setupView.addSubview(caption(
+            "Start at login and Unkillable mode are on the Protection tab.",
+            frame: NSRect(x: 14, y: 20, width: 380, height: 28)))
+        let toProtectionBtn = NSButton(title: "Open Protection", target: self, action: #selector(openProtectionTab))
+        toProtectionBtn.bezelStyle = .rounded
+        toProtectionBtn.frame = NSRect(x: 376, y: 16, width: 130, height: 28)
+        setupView.addSubview(toProtectionBtn)
+
+        setupTab.view = setupView
+        tabView.addTabViewItem(setupTab)
+
+        // -------------------------------------------------------------
+        // Protection: the on/off switches, grouped
+        // -------------------------------------------------------------
+        let protectionTab = NSTabViewItem(identifier: "ProtectionTab")
+        protectionTab.label = "Protection"
+        let protectionView = NSView(frame: tabView.contentRect)
+
+        protectionView.addSubview(sectionHeader("Typing", frame: NSRect(x: 14, y: 252, width: 300, height: 14)))
+
+        enableCheckbox = NSButton(checkboxWithTitle: "Enable System-Wide Word Blocking", target: self, action: #selector(enableToggled(_:)))
+        enableCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        enableCheckbox.state = WordStore.shared.isEnabled ? .on : .off
+        enableCheckbox.frame = NSRect(x: 14, y: 226, width: 400, height: 22)
+        protectionView.addSubview(enableCheckbox)
+
+        soundCheckbox = NSButton(checkboxWithTitle: "Play sound alert on auto-delete", target: self, action: #selector(soundToggled(_:)))
+        soundCheckbox.state = WordStore.shared.playAlertSound ? .on : .off
+        soundCheckbox.frame = NSRect(x: 14, y: 202, width: 400, height: 22)
+        protectionView.addSubview(soundCheckbox)
+
+        popupNoteCheckbox = NSButton(checkboxWithTitle: "Show Pop-Up Note when blocked words are typed", target: self, action: #selector(popupNoteToggled(_:)))
+        popupNoteCheckbox.state = WordStore.shared.showPopupNotes ? .on : .off
+        popupNoteCheckbox.frame = NSRect(x: 14, y: 178, width: 500, height: 22)
+        protectionView.addSubview(popupNoteCheckbox)
+
+        fuzzyCheckbox = NSButton(checkboxWithTitle: "Detect leetspeak & character evasions (e.g. b444aad, w0rd)", target: self, action: #selector(fuzzyToggled(_:)))
+        fuzzyCheckbox.state = WordStore.shared.isFuzzyEnabled ? .on : .off
+        fuzzyCheckbox.frame = NSRect(x: 14, y: 154, width: 500, height: 22)
+        protectionView.addSubview(fuzzyCheckbox)
+
+        protectionView.addSubview(createDivider(frame: NSRect(x: 14, y: 142, width: 490, height: 1)))
+        protectionView.addSubview(sectionHeader("Staying protected", frame: NSRect(x: 14, y: 122, width: 300, height: 14)))
+
+        loginCheckbox = NSButton(checkboxWithTitle: "Start at login, and relaunch if force-quit", target: self, action: #selector(loginToggled(_:)))
+        loginCheckbox.state = LoginItem.isEnabled ? .on : .off
+        loginCheckbox.toolTip = "Runs Word Blocker whenever you log in and brings it straight back if it is force-quit (Activity Monitor, kill). Turning this on or off restarts the app once. Turning it off needs the math challenge."
+        loginCheckbox.frame = NSRect(x: 14, y: 96, width: 500, height: 22)
+        protectionView.addSubview(loginCheckbox)
+        protectionView.addSubview(caption(
+            "Reopens Word Blocker if it is force-quit. Turning this off needs the math challenge.",
+            frame: NSRect(x: 34, y: 78, width: 470, height: 16)))
+
+        watchdogCheckbox = NSButton(checkboxWithTitle: "Unkillable mode (needs your Mac password)", target: self, action: #selector(watchdogToggled(_:)))
+        watchdogCheckbox.state = Watchdog.isInstalled ? .on : .off
+        watchdogCheckbox.toolTip = "Installs a small system helper that runs as an administrator, so Force Quit and kill can't stop it, and it reopens Word Blocker within about half a second if the app is killed. With it on, quitting Word Blocker needs the math challenge and your Mac password. Turning it off needs both too."
+        watchdogCheckbox.frame = NSRect(x: 14, y: 50, width: 500, height: 22)
+        protectionView.addSubview(watchdogCheckbox)
+        protectionView.addSubview(caption(
+            "Advanced. Runs a helper as administrator so Force Quit can't stop Word Blocker. Quitting it or turning this off then needs the math challenge and your Mac password.",
+            frame: NSRect(x: 34, y: 4, width: 470, height: 44)))
+
+        protectionTab.view = protectionView
+        tabView.addTabViewItem(protectionTab)
 
         // -------------------------------------------------------------
         // Tab 1: Blocked Words & Notes
         // -------------------------------------------------------------
         let blockedTab = NSTabViewItem(identifier: "BlockedTab")
-        blockedTab.label = "🚫 Words"
+        blockedTab.label = "Words"
         let blockedView = NSView(frame: tabView.contentRect)
 
         // Search Bar for Blocked Words
@@ -243,7 +320,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         // Tab 2: Exceptions
         // -------------------------------------------------------------
         let exceptionsTab = NSTabViewItem(identifier: "ExceptionsTab")
-        exceptionsTab.label = "✨ Exceptions"
+        exceptionsTab.label = "Allowed"
         let exceptionsView = NSView(frame: tabView.contentRect)
 
         let exHeader = NSTextField(labelWithString: "Allowed Words (Exceptions): Words added here will NEVER be deleted.")
@@ -301,7 +378,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         // Tab 3: Blocked Websites & Notes
         // -------------------------------------------------------------
         let websitesTab = NSTabViewItem(identifier: "WebsitesTab")
-        websitesTab.label = "🌐 Websites"
+        websitesTab.label = "Websites"
         let websitesView = NSView(frame: tabView.contentRect)
 
         // Options Checkboxes
@@ -387,7 +464,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         // Tab 4: Cinema Mode
         // -------------------------------------------------------------
         let cinemaTab = NSTabViewItem(identifier: "CinemaTab")
-        cinemaTab.label = "🎬 Cinema Mode"
+        cinemaTab.label = "Cinema"
         let cinemaView = NSView(frame: tabView.contentRect)
 
         cinemaEnableCheckbox = NSButton(checkboxWithTitle: "Enable Cinema Mode", target: self, action: #selector(cinemaEnableToggled(_:)))
@@ -438,7 +515,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         // Tab 5: Custom Prompts (Enabled & Quit Messages)
         // -------------------------------------------------------------
         let promptsTab = NSTabViewItem(identifier: "PromptsTab")
-        promptsTab.label = "💬 Prompts"
+        promptsTab.label = "Prompts"
         let promptsView = NSView(frame: tabView.contentRect)
 
         // Section 1: Disable Protection Intervention Message
@@ -515,6 +592,8 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         testField.placeholderString = "Try typing 'blockme' (shows note!), 'b444aad', or 'badger'..."
         contentView.addSubview(testField)
 
+        // Open on Protection once the required permission is in place, otherwise on Setup.
+        tabView.selectTabViewItem(at: PermissionsManager.shared.isAccessibilityGranted() ? 1 : 0)
         updatePermissionStatus()
 
         // Observers
@@ -559,18 +638,82 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         return box
     }
 
+    public override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        updatePermissionStatus()
+        // Missing the required permission: land on Setup so the fix is the first thing seen.
+        if !PermissionsManager.shared.isAccessibilityGranted() {
+            settingsTabView?.selectTabViewItem(at: 0)
+        }
+    }
+
     public func updatePermissionStatus() {
         let granted = PermissionsManager.shared.isAccessibilityGranted()
         if granted {
-            permissionBanner.stringValue = "✅ Accessibility Permission Active"
+            permissionBanner.stringValue = "✅ Accessibility permission active"
             permissionBanner.textColor = .systemGreen
             permissionButton.isHidden = true
-            permissionHintLabel.isHidden = true
         } else {
-            permissionBanner.stringValue = "⚠️ Accessibility Permission Missing"
+            permissionBanner.stringValue = "⚠️ Setup needed: Accessibility permission is missing"
             permissionBanner.textColor = .systemOrange
             permissionButton.isHidden = false
-            permissionHintLabel.isHidden = false
+        }
+        refreshSetupRows(accessibilityGranted: granted)
+    }
+
+    /// Where the optional image-scanner model lives (same place the scanner loads it from).
+    private var modelIsInstalled: Bool {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        let folder = support.appendingPathComponent("WordBlocker")
+        return ["NSFW.mlmodelc", "NSFW.mlpackage"].contains {
+            FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path)
+        }
+    }
+
+    /// Refreshes the Setup tab. Skipped while the window is hidden: this runs on the permission poll.
+    private func refreshSetupRows(accessibilityGranted: Bool) {
+        guard accessIcon != nil, window?.isVisible == true else { return }
+
+        accessIcon.stringValue = accessibilityGranted ? "✅" : "⚠️"
+        accessDetail.stringValue = accessibilityGranted
+            ? "Granted. Word Blocker can see what you type and which page your browser is on."
+            : "Lets Word Blocker see your typing and your browser's address bar. Already listed? Switch it off and on once."
+        accessButton.isHidden = accessibilityGranted
+
+        let screenGranted = CGPreflightScreenCaptureAccess()
+        screenIcon.stringValue = screenGranted ? "✅" : "⚪️"
+        screenDetail.stringValue = screenGranted
+            ? "Granted. The image scanner can look at your screen."
+            : "Only needed for the image scanner. Word and website blocking work without it."
+        screenButton.isHidden = screenGranted
+
+        let hasModel = modelIsInstalled
+        modelIcon.stringValue = hasModel ? "✅" : "⚪️"
+        modelDetail.stringValue = hasModel
+            ? "Installed. The scanner runs on your Mac and nothing leaves it."
+            : "A one-time setup (a few hundred MB). Until then the image scanner stays off."
+        modelButton.isHidden = hasModel
+    }
+
+    @objc private func openSetupTab() {
+        settingsTabView?.selectTabViewItem(at: 0)
+    }
+
+    @objc private func openProtectionTab() {
+        settingsTabView?.selectTabViewItem(at: 1)
+    }
+
+    @objc private func screenRecordingButtonClicked() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func modelHelpClicked() {
+        if let url = URL(string: "https://github.com/tenebrsx/blocker#optional-image-scanner-model") {
+            NSWorkspace.shared.open(url)
         }
     }
 
