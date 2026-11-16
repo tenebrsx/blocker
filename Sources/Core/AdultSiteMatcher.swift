@@ -21,7 +21,8 @@ public enum AdultSiteMatcher {
         "chaturbate", "stripchat", "bongacams", "livejasmin", "brazzers", "rule34", "camwhores",
         "pussy", "fuck", "blowjob", "cumshot", "gangbang", "creampie", "bdsm", "nudist",
         "sexvid", "sexcam", "sexchat", "sextube", "sexmov", "sexpic", "sexstor", "freesex", "livesex",
-        "redgifs", "camgirl", "gaysex", "gaycam", "gaytube", "cocksuck", "dickpic"
+        "redgifs", "camgirl", "gaysex", "gaycam", "gaytube", "cocksuck", "dickpic",
+        "yaoi", "futanari", "paizuri", "ahegao"
     ]
 
     /// Whole words inside a hyphen-separated label (`sex-videos`, `nsfw-pics`), so they can't match
@@ -69,7 +70,9 @@ public enum AdultSiteMatcher {
         // Explicit terms that mostly turn up around male-oriented adult content. Single words that are also
         // ordinary words (cock, dick, hung) are only blocked inside the phrases below.
         "twink", "twinks", "bareback", "barebacking", "bussy", "dickpic", "dickpics", "cocksucker", "cocksuckers",
-        "cocksucking", "jerkoff", "gaysex", "gaycam", "gaycams", "dildo", "dildos"
+        "cocksucking", "jerkoff", "gaysex", "gaycam", "gaycams", "dildo", "dildos",
+        // Drawn porn, straight and gay (`yaoi` is gay manga, mostly explicit in the West).
+        "yaoi", "futanari", "paizuri", "oppai"
     ]
 
     /// Word sequences that block a search, for terms that are fine on their own (`cock`, `dick`, `jerk`).
@@ -77,7 +80,7 @@ public enum AdultSiteMatcher {
     static let queryPhrases: [String] = [
         "jerk off", "jerking off", "dick pic", "dick pics", "big dick", "big cock", "hard dick", "hard cock",
         "suck dick", "suck cock", "sucking dick", "sucking cock", "gay cam", "gay cams", "gay webcam",
-        "hung guys", "hung men", "hung twink", "hung twinks"
+        "hung guys", "hung men", "hung twink", "hung twinks", "rule 34"
     ]
 
     /// Any word that merely contains one of these (`pornstar`, `xxxvideos`) also blocks a search.
@@ -216,7 +219,9 @@ public enum AdultSiteMatcher {
     static let communityFragments: [String] = [
         "porn", "xxx", "hentai", "nsfw", "gonewild", "rule34", "onlyfans", "nudes", "bareback", "twink",
         "blowjob", "creampie", "cumshot", "gangbang", "bdsm", "bukkake", "deepthroat", "camgirl", "cocksuck",
-        "realgirls"
+        "realgirls",
+        // Drawn and animated porn, straight and gay: hentai itself is covered by the first list above.
+        "yaoi", "ecchi", "doujinshi", "ahegao", "futanari", "paizuri", "oppai", "lewd", "lolicon", "shotacon"
     ]
 
     /// Recovery and support communities that have those words in their names. Never blocked.
@@ -230,7 +235,8 @@ public enum AdultSiteMatcher {
     static let postTitleWords: Set<String> = [
         "xxx", "hentai", "nsfw", "blowjob", "blowjobs", "handjob", "handjobs", "cumshot", "cumshots", "creampie",
         "gangbang", "twink", "twinks", "bareback", "barebacking", "bukkake", "deepthroat", "onlyfans", "gonewild",
-        "nudes", "milf", "dildo", "dildos", "bussy", "cocksucker", "cocksucking", "pornstar", "pornstars"
+        "nudes", "milf", "dildo", "dildos", "bussy", "cocksucker", "cocksucking", "pornstar", "pornstars",
+        "ahegao", "futanari", "paizuri", "lolicon", "shotacon", "rule34"
     ]
 
     /// True for a Reddit page in an adult community, or for a post whose title says it is explicit media.

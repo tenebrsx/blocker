@@ -31,7 +31,10 @@ public enum AdultContentScorer {
         // (adding them closed the Reddit home page several times in two minutes).
         "twink": 3, "twinks": 3, "bareback": 3, "barebacking": 3, "bussy": 3, "cocksucker": 3, "cocksucking": 3,
         "jerkoff": 3, "dickpic": 3, "dickpics": 3, "cumshots": 3, "blowjobs": 3, "handjobs": 3, "bukkake": 3,
-        "deepthroat": 3, "gaysex": 3, "dildo": 2, "dildos": 2
+        "deepthroat": 3, "gaysex": 3, "dildo": 2, "dildos": 2,
+        // Drawn porn, straight and gay.
+        "futanari": 3, "paizuri": 3, "ahegao": 3, "lolicon": 3, "shotacon": 3, "rule34": 3, "oppai": 2, "yaoi": 2,
+        "ecchi": 1, "doujinshi": 1
     ]
 
     /// Words starting with these count too (`pornography`, `pornographic`, `pornhub`).

@@ -451,11 +451,36 @@ struct TestRunner {
         for page in ["https://www.reddit.com/r/NoFap/", "https://www.reddit.com/r/pornfree/comments/abc123/day_30_relapse/",
                      "https://www.reddit.com/r/relationships/comments/abc123/my_boyfriend_watches_porn_and_lies/",
                      "https://www.reddit.com/r/mildlyinfuriating/comments/abc123/what_the_fuck_is_this/",
-                     "https://www.reddit.com/r/Biohacking/", "https://www.reddit.com/r/yaoi/", "https://www.reddit.com/r/aww/comments/abc123/blue_tits_on_my_feeder/",
+                     "https://www.reddit.com/r/Biohacking/", "https://www.reddit.com/r/aww/comments/abc123/blue_tits_on_my_feeder/",
                      "https://www.reddit.com/search/?q=cats", "https://www.reddit.com/", "https://example.com/r/porn/",
                      "https://notreddit.com/r/nsfw/", "about:blank"] {
             assertTest(!AdultSiteMatcher.isAdultCommunityPage(urlOrHost: page), "Ordinary Reddit page left alone: \(page)")
         }
+
+        // Hentai and other drawn porn, straight and gay, on Reddit and in searches; ordinary anime stays open.
+        for page in ["https://www.reddit.com/r/hentai/", "https://www.reddit.com/r/Hentai_Irl/", "https://www.reddit.com/r/yaoi/",
+                     "https://www.reddit.com/r/gayhentai/", "https://www.reddit.com/r/ecchi/", "https://www.reddit.com/r/Doujinshi/",
+                     "https://www.reddit.com/r/ahegao/", "https://www.reddit.com/r/futanari/", "https://www.reddit.com/r/Paizuri/",
+                     "https://www.reddit.com/r/OppaiLove/", "https://www.reddit.com/r/LewdGames/", "https://www.reddit.com/r/lolicon/",
+                     "https://www.reddit.com/r/rule34/", "https://www.reddit.com/r/pics/comments/abc123/new_futanari_art/"] {
+            assertTest(AdultSiteMatcher.isAdultCommunityPage(urlOrHost: page), "Drawn-porn Reddit page caught: \(page)")
+        }
+        for page in ["https://www.reddit.com/r/anime/", "https://www.reddit.com/r/manga/", "https://www.reddit.com/r/Animemes/",
+                     "https://www.reddit.com/r/yuri/", "https://www.reddit.com/r/LolitaFashion/", "https://www.reddit.com/r/BoysLove/",
+                     "https://www.reddit.com/r/Genshin_Impact/comments/abc/futaba_cosplay/", "https://www.reddit.com/r/manga/comments/abc/yaoi_manga_recommendations/"] {
+            assertTest(!AdultSiteMatcher.isAdultCommunityPage(urlOrHost: page), "Ordinary anime Reddit page left alone: \(page)")
+        }
+        for phrase in ["hentai", "yaoi hentai", "yaoi", "gay hentai", "futanari", "ahegao", "paizuri", "oppai", "rule 34", "rule34", "lewd anime girls"] {
+            assertTest(AdultSiteMatcher.isAdultSearch(urlOrHost: googleSearch(phrase)), "Drawn-porn search caught: \(phrase)")
+        }
+        for phrase in ["anime", "yuri", "manga recommendations", "attack on titan", "sailor moon", "futaba persona", "studio ghibli films"] {
+            assertTest(!AdultSiteMatcher.isAdultSearch(urlOrHost: googleSearch(phrase)), "Ordinary anime search allowed: \(phrase)")
+        }
+        for host in ["https://free-yaoi-manga.net/", "https://futanari-art.com/", "https://ahegao-gallery.org/"] {
+            assertTest(AdultSiteMatcher.isAdult(urlOrHost: host), "Drawn-porn address caught by name: \(host)")
+        }
+        assertTest(AdultContentScorer.isAdultContent("Free hentai doujinshi: yaoi futanari ahegao galleries. 18+ only. Adult content. Oppai paizuri ecchi."), "A drawn-porn page is flagged by its text")
+        assertTest(!AdultContentScorer.isAdultContent("Weekly anime news: new ecchi comedy announced, manga chapter list and doujinshi event dates at the convention."), "An anime news page is not")
 
         // Social feeds are not judged by their page text; adult addresses on them still are.
         for page in ["https://www.reddit.com/", "https://www.reddit.com/r/all/", "https://old.reddit.com/r/popular/", "https://x.com/home",
