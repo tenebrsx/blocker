@@ -24,6 +24,12 @@ test:
 		Sources/Core/ActionDispatcher.swift \
 		Sources/Core/MathChallenge.swift \
 		Sources/Core/AdultSiteMatcher.swift \
+		Sources/Core/AdultDomainIndex.swift \
+		Sources/Core/AdultDomainList.swift \
+		Sources/Core/AdultContentScorer.swift \
+		Sources/Core/LaunchAgentPlist.swift \
+		Sources/Core/Guardian.swift \
+		Sources/Core/ImageScanLogic.swift \
 		Tests/EngineTests.swift \
 		-o Tests/run_tests && ./Tests/run_tests && rm Tests/run_tests
 

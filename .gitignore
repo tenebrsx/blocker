@@ -7,3 +7,6 @@ Tests/run_tests
 
 # macOS
 .DS_Store
+
+# Release zips
+dist/

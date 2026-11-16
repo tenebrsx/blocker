@@ -5,6 +5,10 @@
 /// Pure Swift (no Foundation) so it can be unit-tested anywhere.
 public enum AdultSiteMatcher {
 
+    /// Extra lookup against the large downloaded blocklists (`AdultDomainList`). Set at startup so this file
+    /// stays free of Foundation and easy to test.
+    public static var domainLookup: ((String) -> Bool)?
+
     // MARK: - Site address rules
 
     /// Top-level domains that exist for adult content.
@@ -58,7 +62,9 @@ public enum AdultSiteMatcher {
         "sex", "sexy", "sexting", "nsfw", "nude", "nudes", "naked", "topless", "milf", "erotic", "erotica",
         "fetish", "camgirl", "camgirls", "blowjob", "handjob", "cumshot", "creampie", "gangbang", "bdsm",
         "pussy", "anal", "tits", "boobs", "slut", "whore", "orgy", "jav", "fap", "onlyfans", "redgifs",
-        "nudist"
+        "nudist", "cum", "cumming", "cums", "thot", "thots", "bukkake", "deepthroat", "footjob", "rimjob",
+        "squirt", "squirting", "lewd", "lewds", "ahegao", "jizz", "wank", "wanking", "incest", "pron",
+        "loli", "lolicon", "shotacon", "jailbait", "sexo", "desnuda", "desnudas", "desnudo"
     ]
 
     /// Any word that merely contains one of these (`pornstar`, `xxxvideos`) also blocks a search.
@@ -161,6 +167,9 @@ public enum AdultSiteMatcher {
             return true
         }
 
+        // The big downloaded lists (about a million domains).
+        if let lookup = domainLookup, lookup(host) { return true }
+
         // Keyword heuristics on every label except the TLD.
         for label in labels.dropLast() {
             for fragment in labelSubstrings where label.contains(fragment) { return true }
@@ -200,11 +209,59 @@ public enum AdultSiteMatcher {
         }
         if !word.isEmpty { words.append(word) }
 
+        // Spelled out with spaces ("p o r n"): a run of three or more single letters also counts as one word.
+        var run = ""
+        var runLength = 0
         for word in words {
-            if queryWords.contains(word) { return true }
-            for fragment in queryFragments where word.contains(fragment) { return true }
+            if word.count == 1, word.first?.isLetter == true {
+                run += word
+                runLength += 1
+            } else {
+                if runLength >= 3 { words.append(run) }
+                run = ""
+                runLength = 0
+            }
+        }
+        if runLength >= 3 { words.append(run) }
+
+        for word in words {
+            for candidate in spellingVariants(of: word) {
+                if queryWords.contains(candidate) { return true }
+                for fragment in queryFragments where candidate.contains(fragment) { return true }
+            }
         }
         return false
+    }
+
+    /// The word itself, plus versions with common disguises undone: digits swapped for letters
+    /// (`p0rn`, `s3x`) and stretched letters squeezed (`pooorn`, `sexxx`).
+    static func spellingVariants(of word: String) -> [String] {
+        var variants = [word]
+
+        let leet: [Character: Character] = ["0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"]
+        if word.contains(where: { $0.isLetter }), word.contains(where: { leet[$0] != nil }) {
+            variants.append(String(word.map { leet[$0] ?? $0 }))
+        }
+
+        // A letter repeated three or more times in a row becomes a single letter.
+        var squeezed = ""
+        var changed = false
+        let characters = Array(word)
+        var index = 0
+        while index < characters.count {
+            var end = index
+            while end < characters.count && characters[end] == characters[index] { end += 1 }
+            let runLength = end - index
+            if runLength >= 3 {
+                squeezed.append(characters[index])
+                changed = true
+            } else {
+                for _ in 0..<runLength { squeezed.append(characters[index]) }
+            }
+            index = end
+        }
+        if changed { variants.append(squeezed) }
+        return variants
     }
 
     /// Fallback for when a browser hides its address: a page title that names an adult site or category.

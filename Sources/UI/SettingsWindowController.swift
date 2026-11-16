@@ -28,6 +28,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private var enableCheckbox: NSButton!
     private var soundCheckbox: NSButton!
     private var fuzzyCheckbox: NSButton!
+    private var loginCheckbox: NSButton!
     private var popupNoteCheckbox: NSButton!
 
     // Tab 1: Blocked Words & Notes
@@ -66,7 +67,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     private convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 790),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 814),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -83,7 +84,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = contentView
 
-        var currentY: CGFloat = 745
+        var currentY: CGFloat = 769
 
         // Title Header
         let titleLabel = NSTextField(labelWithString: "🛡️ Word Blocker")
@@ -148,6 +149,14 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         fuzzyCheckbox.state = WordStore.shared.isFuzzyEnabled ? .on : .off
         fuzzyCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
         contentView.addSubview(fuzzyCheckbox)
+
+        currentY -= 24
+
+        loginCheckbox = NSButton(checkboxWithTitle: "Start at login, and relaunch if force-quit", target: self, action: #selector(loginToggled(_:)))
+        loginCheckbox.state = LoginItem.isEnabled ? .on : .off
+        loginCheckbox.toolTip = "Runs Word Blocker whenever you log in and brings it straight back if it is force-quit (Activity Monitor, kill). Turning this on or off restarts the app once. Turning it off needs the math challenge."
+        loginCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
+        contentView.addSubview(loginCheckbox)
 
         currentY -= 330
 
@@ -648,6 +657,18 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         requireMath(toDo: "turn off fuzzy matching") {
             WordStore.shared.isFuzzyEnabled = false
             sender.state = .off
+        }
+    }
+
+    @objc private func loginToggled(_ sender: NSButton) {
+        if sender.state == .on {
+            // Installs the launch agent and restarts the app under it.
+            if !LoginItem.enableAndRestart() { sender.state = .off }
+            return
+        }
+        sender.state = .on   // stays on until the challenge is passed
+        requireMath(toDo: "turn off start-at-login and relaunch-if-force-quit") {
+            LoginItem.disableAndRestart()
         }
     }
 

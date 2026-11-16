@@ -6,6 +6,8 @@ public final class MenuBarController {
 
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
+    private var listMenuItem: NSMenuItem!
+    private var scannerMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
     private var cinemaMenuItem: NSMenuItem!
     public var isTerminatingConfirmed = false
@@ -25,6 +27,16 @@ public final class MenuBarController {
         statusMenuItem = NSMenuItem(title: "Status: Initializing...", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
+
+        listMenuItem = NSMenuItem(title: AdultDomainList.shared.statusText, action: nil, keyEquivalent: "")
+        listMenuItem.isEnabled = false
+        menu.addItem(listMenuItem)
+        AdultDomainList.shared.onChange = { [weak self] in self?.updateMenuState() }
+
+        scannerMenuItem = NSMenuItem(title: ScreenImageScanner.shared.statusText, action: #selector(openScreenRecordingSettings), keyEquivalent: "")
+        scannerMenuItem.target = self
+        menu.addItem(scannerMenuItem)
+        ScreenImageScanner.shared.onChange = { [weak self] in self?.updateMenuState() }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -88,6 +100,10 @@ public final class MenuBarController {
             }
         }
 
+        listMenuItem?.title = AdultDomainList.shared.statusText
+        scannerMenuItem?.title = ScreenImageScanner.shared.statusText
+        scannerMenuItem?.isEnabled = ScreenImageScanner.shared.status == .needsPermission
+
         toggleMenuItem.state = isEnabled ? .on : .off
         toggleMenuItem.title = isEnabled ? "Protection Enabled" : "Protection Disabled"
 
@@ -142,6 +158,12 @@ public final class MenuBarController {
         NSApp.activate(ignoringOtherApps: true)
         SettingsWindowController.shared.showWindow(nil)
         SettingsWindowController.shared.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openScreenRecordingSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc private func openAccessibility() {

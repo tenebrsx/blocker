@@ -292,6 +292,152 @@ struct TestRunner {
         assertTest(AdultSiteMatcher.isAdult(urlOrHost: "https://jav.guru/x"), "Short adult token host blocked")
         assertTest(!AdultSiteMatcher.isAdult(urlOrHost: "https://www.analyticsvidhya.com"), "Words like 'analytics' are not flagged")
 
+        // -------------------------------------------------------------
+        // Test 14: Large blocklist index and page-content scorer
+        // -------------------------------------------------------------
+        print("\n--- Test 14: Blocklist Index & Content Scorer ---")
+        let sampleList = """
+        # Title: sample hosts file
+        127.0.0.1 localhost
+        0.0.0.0 0.0.0.0
+        0.0.0.0 bad-site.example   # trailing comment
+        0.0.0.0 Another.Adult.Test
+        0.0.0.0 *.wild.example
+        plain-domain.example
+        0.0.0.0 not_valid!.example
+        10.0.0.1
+        0.0.0.0 google.com
+        """
+        let sampleIndex = AdultDomainIndex(hashes: AdultDomainIndex.parse(Array(sampleList.utf8)))
+        assertTest(sampleIndex.count == 5, "Hosts-format list parses to 5 domains (comments, IPs, localhost, invalid skipped)")
+        assertTest(sampleIndex.containsHost("bad-site.example") && sampleIndex.containsHost("a.b.bad-site.example"), "Listed domain and its subdomains match")
+        assertTest(sampleIndex.containsHost("ANOTHER.adult.TEST"), "Matching is case-insensitive")
+        assertTest(sampleIndex.containsHost("wild.example") && sampleIndex.containsHost("x.wild.example"), "Wildcard entries match")
+        assertTest(!sampleIndex.containsHost("example") && !sampleIndex.containsHost("localhost"), "Bare TLDs and localhost never match")
+        assertTest(!sampleIndex.containsHost("google.com") && !sampleIndex.containsHost("mail.google.com"), "Never-block list overrides a wrong list entry")
+        assertTest(AdultDomainIndex(serialized: sampleIndex.serialized()).hashes == sampleIndex.hashes, "Index survives a save/load round trip")
+
+        AdultSiteMatcher.domainLookup = { sampleIndex.containsHost($0) }
+        assertTest(AdultSiteMatcher.isAdult(urlOrHost: "https://www.bad-site.example/page"), "Matcher consults the downloaded blocklists")
+        AdultSiteMatcher.domainLookup = nil
+        assertTest(!AdultSiteMatcher.isAdult(urlOrHost: "https://www.bad-site.example/page"), "Without a lookup only built-in rules apply")
+
+        assertTest(AdultContentScorer.isAdultContent("Free Porn Videos - XXX Tube. Nude naked girls hentai. Are you 18? You must be 18"), "Obvious adult page is flagged")
+        assertTest(AdultContentScorer.isAdultContent("This site contains adult content. You must be 18 years of age or older to enter."), "Age-gate page is flagged")
+        assertTest(!AdultContentScorer.isAdultContent("Inbox (3) - Gmail. Meeting notes for Monday. Weather in Essex. Swift analytics dashboard."), "Ordinary page is not flagged")
+        assertTest(!AdultContentScorer.isAdultContent("Sex education for teens: what parents should know about sexual health and puberty."), "Health article stays below the threshold")
+        assertTest(!AdultContentScorer.isAdultContent("porn porn porn porn porn porn porn porn"), "One repeated word cannot trip it alone")
+
+        // -------------------------------------------------------------
+        // Test 15: Disguised search terms, and safe image searches stay open
+        // -------------------------------------------------------------
+        print("\n--- Test 15: Disguised Terms & Safe Image Searches ---")
+        let imageSearchUrls = [
+            "https://www.google.com/search?q=cats&udm=2", "https://www.google.com/search?q=cats&tbm=isch",
+            "https://www.bing.com/images/search?q=mountain+sunset", "https://duckduckgo.com/?q=recipes&iax=images&ia=images"
+        ]
+        for url in imageSearchUrls {
+            assertTest(!AdultSiteMatcher.isAdultSearch(urlOrHost: url) && !AdultSiteMatcher.isAdult(urlOrHost: url), "Safe image search is allowed: \(url)")
+        }
+        let explicitImageSearchUrls = [
+            "https://www.google.com/search?q=porn&udm=2", "https://www.google.com/search?q=nude+pics&tbm=isch",
+            "https://www.bing.com/images/search?q=hentai"
+        ]
+        for url in explicitImageSearchUrls {
+            assertTest(AdultSiteMatcher.isAdultSearch(urlOrHost: url), "Explicit image search is still blocked: \(url)")
+        }
+        let disguised = [
+            "https://www.google.com/search?q=p0rn", "https://www.google.com/search?q=pooorn",
+            "https://www.google.com/search?q=p+o+r+n", "https://www.google.com/search?q=s3x+videos",
+            "https://www.google.com/search?q=bukkake", "https://www.google.com/search?q=s3xy+pics"
+        ]
+        for url in disguised {
+            assertTest(AdultSiteMatcher.isAdultSearch(urlOrHost: url), "Disguised adult search caught: \(url)")
+        }
+        let innocent = [
+            "https://www.google.com/search?q=1080p+monitor", "https://www.google.com/search?q=room+305",
+            "https://www.google.com/search?q=a+b+c+d", "https://www.google.com/search?q=moby+dick"
+        ]
+        for url in innocent {
+            assertTest(!AdultSiteMatcher.isAdultSearch(urlOrHost: url), "Innocent search allowed: \(url)")
+        }
+
+        // -------------------------------------------------------------
+        // Test 16: Launch agent definition (start at login / relaunch if killed)
+        // -------------------------------------------------------------
+        print("\n--- Test 16: Launch Agent Plist ---")
+        let agentPath = "/Users/someone/word blocker/WordBlocker.app/Contents/MacOS/WordBlocker"
+        let agent = LaunchAgentPlist.make(label: "com.wordblocker.app.agent", executable: agentPath)
+        assertTest(agent["RunAtLoad"] as? Bool == true, "Agent starts at login")
+        assertTest((agent["KeepAlive"] as? [String: Bool])?["SuccessfulExit"] == false, "Agent restarts only after an abnormal exit (a normal quit stays quit)")
+        assertTest(agent["AbandonProcessGroup"] as? Bool == true, "Hand-over helper may outlive the app")
+        let agentData = try! LaunchAgentPlist.data(label: "com.wordblocker.app.agent", executable: agentPath)
+        assertTest(LaunchAgentPlist.executable(in: agentData) == agentPath, "Agent file round-trips with a path containing a space")
+        assertTest(LaunchAgentPlist.executable(in: Data("not a plist".utf8)) == nil, "A broken agent file is rejected")
+        assertTest(LaunchAgentPlist.shellQuote("/a b/it's") == "'/a b/it'\\''s'", "Shell quoting handles spaces and apostrophes")
+        assertTest((agent["ThrottleInterval"] as? Int ?? 99) <= 2, "A killed app is restarted by launchd within about 2 seconds")
+        assertTest(LaunchAgentPlist.isCurrent(agentData, label: "com.wordblocker.app.agent", executable: agentPath), "A freshly written agent file is current")
+        var staleAgent = LaunchAgentPlist.make(label: "com.wordblocker.app.agent", executable: agentPath)
+        staleAgent["ThrottleInterval"] = 5
+        let staleData = try! PropertyListSerialization.data(fromPropertyList: staleAgent, format: .xml, options: 0)
+        assertTest(!LaunchAgentPlist.isCurrent(staleData, label: "com.wordblocker.app.agent", executable: agentPath), "An older agent file (slow restart) is detected and gets rewritten")
+        assertTest(!LaunchAgentPlist.isCurrent(agentData, label: "com.wordblocker.app.agent", executable: "/elsewhere/WordBlocker"), "An agent file for a moved app is detected")
+        assertTest(!LaunchAgentPlist.isCurrent(Data("not a plist".utf8), label: "x", executable: "y"), "A broken agent file is never current")
+
+        // -------------------------------------------------------------
+        // Test 16b: Guardian process helpers (pid files, liveness)
+        // -------------------------------------------------------------
+        print("\n--- Test 16b: Guardian helpers ---")
+        assertTest(Guardian.parsePid("4242\n") == 4242, "A pid file with a trailing newline parses")
+        assertTest(Guardian.parsePid("  77 ") == 77, "Whitespace around a pid is ignored")
+        assertTest(Guardian.parsePid("") == nil && Guardian.parsePid("abc") == nil, "Junk is not a pid")
+        assertTest(Guardian.parsePid("0") == nil && Guardian.parsePid("1") == nil && Guardian.parsePid("-5") == nil, "pid 0, 1 and negatives are never accepted")
+        assertTest(Guardian.isAlive(getpid()), "This process counts as alive")
+        assertTest(!Guardian.isAlive(2_000_000_000), "A pid that doesn't exist is not alive")
+        assertTest(!Guardian.isAlive(0) && !Guardian.isAlive(1), "pid 0 and 1 are never treated as ours")
+        assertTest(Guardian.isOurs(getpid()), "A live process running this same program is recognised as ours")
+        assertTest(!Guardian.isOurs(2_000_000_000), "A dead pid is not ours")
+        assertTest(Guardian.argument == "--guardian", "The guardian flag is stable (the app re-launches itself with it)")
+        let guardianTemp = FileManager.default.temporaryDirectory.appendingPathComponent("wb-guardian-\(getpid())")
+        Guardian.directory = guardianTemp
+        try? FileManager.default.createDirectory(at: guardianTemp, withIntermediateDirectories: true)
+        Guardian.writePid(31337, to: Guardian.appPidFile)
+        assertTest(Guardian.readPid(Guardian.appPidFile) == 31337, "A pid written to the app pid file reads back")
+        assertTest(Guardian.readPid(Guardian.guardianPidFile) == nil, "A missing pid file reads as nil")
+        Guardian.prepareForCleanExit()
+        assertTest(FileManager.default.fileExists(atPath: Guardian.quittingMarker.path), "A confirmed quit leaves the marker the guardian looks for")
+        try? FileManager.default.removeItem(at: guardianTemp)
+
+        // -------------------------------------------------------------
+        // Test 17: Screen image scanner decisions (change detection, tiles, verdicts, pacing)
+        // -------------------------------------------------------------
+        print("\n--- Test 17: Image Scan Logic ---")
+        let still = [UInt8](repeating: 100, count: 640)
+        assertTest(ImageScanLogic.difference(still, still) == 0, "Identical screens have no difference")
+        assertTest(ImageScanLogic.difference(still, [UInt8](repeating: 103, count: 640)) < ImageScanLogic.changeThreshold, "A tiny brightness flicker does not count as a change")
+        var withPicture = still
+        for index in 0..<64 { withPicture[index] = 220 }   // a picture appearing over 10% of the screen
+        assertTest(ImageScanLogic.difference(still, withPicture) >= ImageScanLogic.changeThreshold, "A new picture counts as a change")
+        assertTest(ImageScanLogic.difference(still, [1, 2, 3]) == 1, "Mismatched thumbnails are treated as changed")
+
+        let tiles = ImageScanLogic.tiles(width: 640, height: 400)
+        assertTest(tiles.count == 5 && tiles[0] == ImageScanLogic.Tile(x: 0, y: 0, width: 640, height: 400), "Whole screen plus four quarters are scanned")
+        assertTest(tiles.dropFirst().reduce(0) { $0 + $1.width * $1.height } == 640 * 400, "The four quarters exactly cover the screen")
+        let oddTiles = ImageScanLogic.tiles(width: 641, height: 401)
+        assertTest(oddTiles.dropFirst().reduce(0) { $0 + $1.width * $1.height } == 641 * 401, "Odd screen sizes are still covered exactly")
+
+        assertTest(ImageScanLogic.verdict(scores: [0.1, 0.2], previouslySuspect: false) == .clear, "Low scores are clear")
+        assertTest(ImageScanLogic.verdict(scores: [0.1, 0.95], previouslySuspect: false) == .explicit, "A very high score acts at once")
+        assertTest(ImageScanLogic.verdict(scores: [0.8], previouslySuspect: false) == .suspect, "A middling score is rechecked first")
+        assertTest(ImageScanLogic.verdict(scores: [0.8], previouslySuspect: true) == .explicit, "Two suspicious scans in a row act")
+        assertTest(ImageScanLogic.verdict(scores: [], previouslySuspect: false) == .clear, "No scores means clear")
+
+        assertTest(ImageScanLogic.interval(unchangedScans: 0, lowPower: false) == 1.5, "Scans every 1.5s while the screen changes")
+        assertTest(ImageScanLogic.interval(unchangedScans: 5, lowPower: false) == 3.0, "Backs off to 3s when the screen is still")
+        assertTest(ImageScanLogic.interval(unchangedScans: 50, lowPower: false) == 6.0, "Backs off to 6s when it stays still")
+        assertTest(ImageScanLogic.interval(unchangedScans: 0, lowPower: true) == 3.0 && ImageScanLogic.interval(unchangedScans: 50, lowPower: true) == 12.0, "Low Power Mode halves the rate")
+        assertTest(ImageScanLogic.ignoredBundleIdentifiers.contains("com.apple.Terminal"), "Terminal is not scanned")
+
         print("\n🎉 ALL TESTS INCLUDING CINEMA MODE, MATH CHALLENGE AND ADULT BLOCK PASSED SUCCESSFULLY! 🎉\n")
     }
 }

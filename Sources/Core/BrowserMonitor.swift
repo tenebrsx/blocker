@@ -72,6 +72,9 @@ public final class BrowserMonitor {
         guard !isMonitoring else { return }
         isMonitoring = true
 
+        // Downloads / loads the large adult-site blocklists in the background (no-op if already running).
+        AdultDomainList.shared.start()
+
         if activityToken == nil {
             activityToken = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
@@ -215,6 +218,7 @@ public final class BrowserMonitor {
                 // Only act if that browser is still the frontmost app.
                 if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
                     self.evaluate(found, pid: pid, bundleId: bundleId)
+                    self.scheduleContentScan(found, pid: pid, bundleId: bundleId)
                 }
                 if self.rescanRequested {
                     self.rescanRequested = false
@@ -318,22 +322,141 @@ public final class BrowserMonitor {
         let target = BlockTarget(domain: domain, pid: pid, bundleId: bundleId,
                                  window: hit.window, title: hit.title)
 
-        // A short note, but never on top of a social pop-up or math challenge, and not on every rescan.
-        let now = Date()
-        if WordStore.shared.showWebsiteNotes, !isGatePromptActive, !MathChallengeController.shared.isActive,
-           now.timeIntervalSince(lastAdultNoteTime) > 10 {
-            lastAdultNoteTime = now
-            InterventionModalController.shared.showBlockedWord(
-                word: "",
-                note: "This website is permanently blocked. There is no way through."
-            )
-        }
+        showAdultNote()
 
         // Matching tabs by address is only safe for a non-empty key that can sit inside an AppleScript string.
         if !domain.isEmpty, !domain.contains("\""), !domain.contains("\\") {
             leaveTab(target)
         } else {
             closeFrontTab(hit, bundleId: bundleId)
+        }
+    }
+
+    /// A short note, but never on top of a social pop-up or math challenge, and not on every rescan.
+    private func showAdultNote(_ message: String = "This website is permanently blocked. There is no way through.") {
+        let now = Date()
+        guard WordStore.shared.showWebsiteNotes, !isGatePromptActive, !MathChallengeController.shared.isActive,
+              now.timeIntervalSince(lastAdultNoteTime) > 10 else { return }
+        lastAdultNoteTime = now
+        InterventionModalController.shared.showBlockedWord(word: "", note: message)
+    }
+
+    // MARK: - Page content scan (safety net for adult pages on sites no list knows)
+
+    private let contentQueue = DispatchQueue(label: "com.wordblocker.contentscan", qos: .utility)
+    private var contentScanInFlight = false            // main thread only
+    private var lastContentScanURL = ""                // main thread only
+    private var lastContentScanTime: Date = .distantPast
+
+    /// Reads the visible text of the focused page and closes the tab if it reads as adult content.
+    /// Runs on every new page and then every few seconds, on its own queue, with a strict time budget.
+    private func scheduleContentScan(_ found: [ScanHit], pid: pid_t, bundleId: String) {
+        guard isMonitoring, WordStore.shared.isEnabled, !contentScanInFlight, !isLeaving,
+              let hit = found.first(where: { $0.isFocused && !$0.url.isEmpty }),
+              AdultSiteMatcher.host(from: hit.url) != nil else { return }   // real web pages only
+
+        let now = Date()
+        guard hit.url != lastContentScanURL || now.timeIntervalSince(lastContentScanTime) > 4 else { return }
+        contentScanInFlight = true
+        lastContentScanURL = hit.url
+        lastContentScanTime = now
+
+        contentQueue.async { [weak self] in
+            guard let self = self else { return }
+            let text = self.collectPageText(window: hit.window, title: hit.title)
+            let flagged = AdultContentScorer.isAdultContent(text)
+
+            DispatchQueue.main.async {
+                self.contentScanInFlight = false
+                guard flagged,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId)
+            }
+        }
+    }
+
+    /// Closes the tab only if the window is still showing the page that was scanned.
+    private func closeFlaggedPage(_ hit: ScanHit, pid: pid_t, bundleId: String) {
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            let current = self.extractURL(from: hit.window, appRef: AXUIElementCreateApplication(pid))
+            DispatchQueue.main.async {
+                guard current == hit.url else { return }   // navigated away while it was being scanned
+                self.showAdultNote()
+                self.closeFrontTab(hit, bundleId: bundleId)
+            }
+        }
+    }
+
+    /// (contentQueue) Visible text of a page: its title plus static text, headings, link text, button labels
+    /// and image descriptions from the accessibility tree, within a node and time budget.
+    private func collectPageText(window: AXUIElement, title: String?) -> String {
+        var text = title ?? ""
+        guard let webArea = findWebArea(in: window, depth: 0) else { return text }
+
+        let deadline = Date().addingTimeInterval(0.35)
+        var pending: [AXUIElement] = [webArea]
+        var next = 0
+        var visited = 0
+
+        func string(_ element: AXUIElement, _ attribute: String) -> String? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+            return value as? String
+        }
+
+        while next < pending.count, visited < 800, text.count < 12_000, Date() < deadline {
+            let element = pending[next]
+            next += 1
+            visited += 1
+
+            switch string(element, kAXRoleAttribute as String) ?? "" {
+            case "AXStaticText":
+                if let value = string(element, kAXValueAttribute as String) { text += " " + value }
+            case "AXHeading", "AXLink", "AXButton", "AXImage":
+                if let value = string(element, kAXTitleAttribute as String) { text += " " + value }
+                if let value = string(element, kAXDescriptionAttribute as String) { text += " " + value }
+            default:
+                break
+            }
+
+            var childrenValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+               let children = childrenValue as? [AXUIElement] {
+                pending.append(contentsOf: children)
+            }
+        }
+        return text
+    }
+
+    private func findWebArea(in element: AXUIElement, depth: Int) -> AXUIElement? {
+        if depth > 14 { return nil }
+        var roleValue: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
+        if (roleValue as? String) == "AXWebArea" { return element }
+
+        var childrenValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+           let children = childrenValue as? [AXUIElement] {
+            for child in children {
+                if let found = findWebArea(in: child, depth: depth + 1) { return found }
+            }
+        }
+        return nil
+    }
+
+    /// Closes the active tab of whichever monitored browser is in front. Used by the screen image scanner,
+    /// which knows something explicit is showing but not which address it came from.
+    public func closeFrontmostBrowserTab() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleId = app.bundleIdentifier,
+              BrowserLockdown.isMonitored(bundleId) else { return }
+        let pid = app.processIdentifier
+        scanQueue.async { [weak self] in
+            guard let self = self, let (window, _) = self.browserWindows(pid: pid).first else { return }
+            DispatchQueue.main.async {
+                self.closeFrontTab(ScanHit(window: window, isFocused: true, url: "", title: nil), bundleId: bundleId)
+            }
         }
     }
 

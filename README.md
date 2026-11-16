@@ -21,6 +21,42 @@ A native, high-performance background utility written in Swift for macOS that pr
 
 ---
 
+## Protection Layers (everything runs inside the app: no DNS, VPN or Network Extension)
+
+- **Adult sites: hard block, no unlock.** Built-in domains, TLDs and keywords plus two large blocklists that download and refresh themselves (StevenBlack porn-only hosts, Blocklist Project porn list; hundreds of thousands of domains stored as a compact hash index). The tab is closed on sight. Explicit searches are blocked on every site, including disguised spellings (`p0rn`, `s3xy`, `n.u.d.e`). Unknown adult sites are caught by scoring the page text. Safe image searches (Google Images, Bing, DuckDuckGo) are left alone.
+- **Browser lockdown.** Browsers the app can't monitor (Tor, a Windows browser in a VM, …) are closed on sight, so there is no way around the block.
+- **Math gate.** Quitting, turning protection off, or loosening any setting needs a 30-second cool-off and then 10 math problems in a row (one wrong answer starts over). Entering a social-media site needs 5, then 7, then 10 problems per day. Optional "auto-close tab on visit".
+- **Hard to kill.** Polite quit signals (Activity Monitor "Quit", `kill`, `killall`) are ignored. A second copy of the app runs as a guardian and reopens the app within about half a second if it is force-quit, and the app does the same for the guardian. Activity Monitor is closed the moment it opens while protection is on. Turn on **Start at login, and relaunch if force-quit** in Settings to add launchd as a third layer.
+- **On-device image scanner (optional).** Looks at the screen with an on-device model (Core ML + Vision) and blacks it out and closes the tab when it sees explicit images. Nothing leaves your Mac. Needs Screen Recording permission and the model (see below).
+
+**What it cannot do:** a user-level app can't stop `kill -9` from Terminal or a determined person who kills the app and the guardian in the same instant. Those bring the app back within about a second, but the only truly unkillable setup is a root-owned service, which this project deliberately avoids.
+
+---
+
+## Install from a Release
+
+1. Download `WordBlocker.zip` from the [Releases](https://github.com/tenebrsx/blocker/releases) page and unzip it.
+2. Drag `WordBlocker.app` into `/Applications`.
+3. The app is ad-hoc signed, not notarized, so macOS will quarantine a downloaded copy. Clear that once:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/WordBlocker.app
+   ```
+4. Open it and grant **Accessibility** (see below). That is all the word and website blocking need.
+
+### Optional: image scanner model
+
+The model is not in the repository or the release (it is a few hundred MB). Create it once:
+
+```bash
+python3 -m venv /tmp/nsfw-venv
+/tmp/nsfw-venv/bin/pip install torch transformers coremltools pillow numpy huggingface_hub
+/tmp/nsfw-venv/bin/python scripts/convert_nsfw_model.py
+```
+
+Then restart the app and grant **Screen Recording** when macOS asks. The menu's "Image scanner" line shows its status.
+
+---
+
 ## System Requirements
 
 - **Operating System:** macOS 14.0 (Sonoma) or newer.
