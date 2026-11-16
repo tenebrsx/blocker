@@ -290,6 +290,7 @@ public final class BrowserMonitor {
         // list, ignoring temporary allowances, math unlocks and the auto-close setting.
         for hit in found where AdultSiteMatcher.isAdult(urlOrHost: hit.url)
             || AdultSiteMatcher.isAdultSearch(urlOrHost: hit.url)
+            || AdultSiteMatcher.isAdultCommunityPage(urlOrHost: hit.url)
             || (hit.url.isEmpty && AdultSiteMatcher.isAdultTitle(hit.title ?? "")) {
             blockAdultSite(hit, pid: pid, bundleId: bundleId)
             return
@@ -361,8 +362,10 @@ public final class BrowserMonitor {
             BlockLog.record("website", "adult-title  tab closed  title=\(String((hit.title ?? "").prefix(80)))")
         } else if AdultSiteMatcher.isAdult(urlOrHost: hit.url) {
             BlockLog.record("website", "adult-site  tab closed  page=\(BlockLog.describePage(hit.url))")
-        } else {
+        } else if AdultSiteMatcher.isAdultSearch(urlOrHost: hit.url) {
             BlockLog.record("website", "adult-search  tab closed  page=\(BlockLog.describePage(hit.url))")
+        } else {
+            BlockLog.record("website", "adult-community  tab closed  page=\(BlockLog.describePage(hit.url))")
         }
 
         showAdultNote()
@@ -397,7 +400,7 @@ public final class BrowserMonitor {
         guard isMonitoring, WordStore.shared.isEnabled, !contentScanInFlight, !isLeaving,
               let hit = found.first(where: { $0.isFocused && !$0.url.isEmpty }),
               AdultSiteMatcher.host(from: hit.url) != nil,                  // real web pages only
-              !TrustedSites.isTrusted(urlOrHost: hit.url) else { return }   // never judge YouTube, Wikipedia, shops, news…
+              !TrustedSites.skipsPageTextScan(urlOrHost: hit.url) else { return }   // never judge YouTube, Wikipedia, shops, news, or social feeds by their text
 
         let now = Date()
         guard hit.url != lastContentScanURL || now.timeIntervalSince(lastContentScanTime) > 4 else { return }
@@ -416,7 +419,7 @@ public final class BrowserMonitor {
                 guard flagged,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
                 if let analysis = analysis {
-                    BlockLog.record("website", "page-text  tab closed  score=\(analysis.score) distinct-terms=\(analysis.distinct)  page=\(BlockLog.describePage(hit.url))")
+                    BlockLog.record("website", "page-text  tab closed  score=\(analysis.score) distinct-terms=\(analysis.distinct) top-terms=[\(analysis.terms.joined(separator: ", "))]  page=\(BlockLog.describePage(hit.url))")
                 }
                 self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId)
             }

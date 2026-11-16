@@ -407,6 +407,71 @@ struct TestRunner {
             assertTest(!AdultSiteMatcher.isAdultSearch(urlOrHost: url), "Innocent search allowed: \(url)")
         }
 
+        // Explicit male-oriented vocabulary is caught; ordinary gay-themed and everyday searches are not.
+        // (Being gay is never the trigger: only explicit terms and phrases are.)
+        func googleSearch(_ phrase: String) -> String { "https://www.google.com/search?q=" + phrase.replacingOccurrences(of: " ", with: "+") }
+        for phrase in ["twink", "twinks", "gay twinks", "bareback", "bareback gay", "gay cam", "gay cams live", "dick pics", "big cock",
+                       "big dick", "jerk off", "jerking off", "suck cock", "hung guys", "bussy", "cocksucker", "dildo", "gaysex",
+                       "gay porn", "gay sex videos", "naked men", "nude men", "gay xxx"] {
+            assertTest(AdultSiteMatcher.isAdultSearch(urlOrHost: googleSearch(phrase)), "Explicit search caught: \(phrase)")
+        }
+        for phrase in ["gay rights", "gay pride parade", "gay marriage", "gay bar near me", "gay history museum", "queer film festival",
+                       "twinkle lights", "peacock", "cocktail recipes", "dickens novels", "moby dick", "bear grylls", "big cockatoo",
+                       "hard dickens", "cock robin nursery rhyme", "rooster", "hung up the phone", "jerk chicken recipe", "bareback riding horse"] {
+            let blocked = AdultSiteMatcher.isAdultSearch(urlOrHost: googleSearch(phrase))
+            // "bareback riding horse" does contain the word bareback: a rodeo search is the accepted cost of that term.
+            if phrase == "bareback riding horse" { continue }
+            assertTest(!blocked, "Ordinary search allowed: \(phrase)")
+        }
+        for host in ["https://free-twinks-videos.com/", "https://gaytube-hd.net/", "https://bareback-vids.org/", "https://best-gaysex.net/"] {
+            assertTest(AdultSiteMatcher.isAdult(urlOrHost: host), "Adult address caught by name: \(host)")
+        }
+        for host in ["https://twinkle.com/", "https://gayrights.org/", "https://gaymarriage.org/", "https://peacockfarm.com/", "https://dickinson.edu/"] {
+            assertTest(!AdultSiteMatcher.isAdult(urlOrHost: host), "Ordinary address allowed: \(host)")
+        }
+        let maleExplicitPage = "Twink bareback hardcore cock sucking naked jocks jerking off big dick cum eating. 18+ only adult content."
+        assertTest(AdultContentScorer.isAdultContent(maleExplicitPage), "Explicit male-oriented page text is flagged even without the word porn")
+        let ordinaryPages = [
+            "Gay rights advocates celebrated the court ruling on marriage equality today. Pride parade organisers said the festival would go ahead.",
+            "How to raise a cock rooster on a small farm. Peacock feathers and hen coop tips for beginners.",
+            "The comment thread was full of swearing: fuck this, fucking awful, what the fuck, fucked up service. Dick Cheney memoir review."
+        ]
+        for text in ordinaryPages {
+            assertTest(!AdultContentScorer.isAdultContent(text), "Ordinary page text left alone: \(text.prefix(40))…")
+        }
+
+        // Reddit: adult communities and explicit post titles are blocked by address; ordinary pages and
+        // recovery communities are not.
+        for page in ["https://www.reddit.com/r/TwinkFemboyPorn/comments/1xe3db5/twink_in_the_sun/",
+                     "https://www.reddit.com/r/gonewild30plus/", "https://old.reddit.com/r/nsfw_gifs/top/?t=week",
+                     "https://www.reddit.com/r/AnyCommunity/comments/abc123/hardcore_blowjob_compilation/",
+                     "https://www.reddit.com/r/pics/comments/abc123/new_nudes_collection/"] {
+            assertTest(AdultSiteMatcher.isAdultCommunityPage(urlOrHost: page), "Adult Reddit page caught: \(page)")
+        }
+        for page in ["https://www.reddit.com/r/NoFap/", "https://www.reddit.com/r/pornfree/comments/abc123/day_30_relapse/",
+                     "https://www.reddit.com/r/relationships/comments/abc123/my_boyfriend_watches_porn_and_lies/",
+                     "https://www.reddit.com/r/mildlyinfuriating/comments/abc123/what_the_fuck_is_this/",
+                     "https://www.reddit.com/r/Biohacking/", "https://www.reddit.com/r/yaoi/", "https://www.reddit.com/r/aww/comments/abc123/blue_tits_on_my_feeder/",
+                     "https://www.reddit.com/search/?q=cats", "https://www.reddit.com/", "https://example.com/r/porn/",
+                     "https://notreddit.com/r/nsfw/", "about:blank"] {
+            assertTest(!AdultSiteMatcher.isAdultCommunityPage(urlOrHost: page), "Ordinary Reddit page left alone: \(page)")
+        }
+
+        // Social feeds are not judged by their page text; adult addresses on them still are.
+        for page in ["https://www.reddit.com/", "https://www.reddit.com/r/all/", "https://old.reddit.com/r/popular/", "https://x.com/home",
+                     "https://www.instagram.com/", "https://www.youtube.com/watch?v=abc"] {
+            assertTest(TrustedSites.skipsPageTextScan(urlOrHost: page), "Page text is not scored on: \(page)")
+        }
+        for page in ["https://www.reddit.com/r/TwinkFemboyPorn/", "https://www.reddit.com/search/?q=porn", "https://pornhub.com/",
+                     "https://www.example.com/", "https://www.reddit.com/r/pics/comments/abc/new_nudes_collection/", ""] {
+            assertTest(!TrustedSites.skipsPageTextScan(urlOrHost: page), "Page text is still scored on: \(page)")
+        }
+        // Everyday swearing and everyday words that merely sound rude never add up on their own.
+        let sweary = "Fuck this. Fucking awful service. What the fuck. Fucked up again. Summa cum laude graduate. Cock rooster crowing. That dick move. Moby Dick. Big dicks energy."
+        assertTest(AdultContentScorer.analyse(sweary).score == 0, "Swearing and everyday rude-sounding words score nothing")
+        let explained = AdultContentScorer.analyse(maleExplicitPage)
+        assertTest(explained.terms.contains("twinkx1") && explained.terms.count <= 8, "A flagged page reports which terms it scored on")
+
         // -------------------------------------------------------------
         // Test 16: Launch agent definition (start at login / relaunch if killed)
         // -------------------------------------------------------------
@@ -503,10 +568,15 @@ struct TestRunner {
         assertTest(ImageScanLogic.difference(still, [1, 2, 3]) == 1, "Mismatched thumbnails are treated as changed")
 
         let tiles = ImageScanLogic.tiles(width: 640, height: 400)
-        assertTest(tiles.count == 5 && tiles[0] == ImageScanLogic.Tile(x: 0, y: 0, width: 640, height: 400), "Whole screen plus four quarters are scanned")
-        assertTest(tiles.dropFirst().reduce(0) { $0 + $1.width * $1.height } == 640 * 400, "The four quarters exactly cover the screen")
+        assertTest(tiles.count == 14 && tiles[0] == ImageScanLogic.Tile(x: 0, y: 0, width: 640, height: 400), "Whole screen, a 2x2 grid and a 3x3 grid are scanned")
+        assertTest(tiles[1...4].reduce(0) { $0 + $1.width * $1.height } == 640 * 400, "The four quarters exactly cover the screen")
+        assertTest(tiles[5...13].reduce(0) { $0 + $1.width * $1.height } == 640 * 400, "The nine ninths exactly cover the screen")
+        assertTest(tiles[5] == ImageScanLogic.Tile(x: 0, y: 0, width: 213, height: 133) && tiles[9] == ImageScanLogic.Tile(x: 213, y: 133, width: 213, height: 133), "The 3x3 grid runs row by row; its middle tile is the centre of the screen")
         let oddTiles = ImageScanLogic.tiles(width: 641, height: 401)
-        assertTest(oddTiles.dropFirst().reduce(0) { $0 + $1.width * $1.height } == 641 * 401, "Odd screen sizes are still covered exactly")
+        assertTest(oddTiles[1...4].reduce(0) { $0 + $1.width * $1.height } == 641 * 401
+                   && oddTiles[5...13].reduce(0) { $0 + $1.width * $1.height } == 641 * 401, "Odd screen sizes are still covered exactly")
+        assertTest(ImageScanLogic.tiles(width: 2, height: 2).count == 1, "A tiny image is scanned whole")
+        assertTest(ImageScanLogic.captureLongSide == 1280, "The model looks at a 1280 px screenshot, up from 640")
 
         assertTest(ImageScanLogic.verdict(scores: [0.1, 0.2], previouslySuspect: false) == .clear, "Low scores are clear")
         assertTest(ImageScanLogic.verdict(scores: [0.1, 0.995], previouslySuspect: false) == .explicit, "An overwhelming score acts at once")

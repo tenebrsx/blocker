@@ -21,14 +21,15 @@ public enum AdultSiteMatcher {
         "chaturbate", "stripchat", "bongacams", "livejasmin", "brazzers", "rule34", "camwhores",
         "pussy", "fuck", "blowjob", "cumshot", "gangbang", "creampie", "bdsm", "nudist",
         "sexvid", "sexcam", "sexchat", "sextube", "sexmov", "sexpic", "sexstor", "freesex", "livesex",
-        "redgifs", "camgirl"
+        "redgifs", "camgirl", "gaysex", "gaycam", "gaytube", "cocksuck", "dickpic"
     ]
 
     /// Whole words inside a hyphen-separated label (`sex-videos`, `nsfw-pics`), so they can't match
     /// the middle of an unrelated word (`analytics`, `peacock`, `essex`).
     static let labelTokens: Set<String> = [
         "sex", "sexy", "nsfw", "nude", "nudes", "naked", "topless", "milf", "erotic", "erotica", "fetish",
-        "anal", "tits", "boobs", "slut", "sluts", "whore", "orgy", "jav", "fap", "escorts"
+        "anal", "tits", "boobs", "slut", "sluts", "whore", "orgy", "jav", "fap", "escorts",
+        "twink", "twinks", "bareback", "barebacking", "bussy"
     ]
 
     /// Well-known adult sites whose names don't give them away. A domain here also blocks every subdomain.
@@ -64,7 +65,19 @@ public enum AdultSiteMatcher {
         "pussy", "anal", "tits", "boobs", "slut", "whore", "orgy", "jav", "fap", "onlyfans", "redgifs",
         "nudist", "cum", "cumming", "cums", "thot", "thots", "bukkake", "deepthroat", "footjob", "rimjob",
         "squirt", "squirting", "lewd", "lewds", "ahegao", "jizz", "wank", "wanking", "incest", "pron",
-        "loli", "lolicon", "shotacon", "jailbait", "sexo", "desnuda", "desnudas", "desnudo"
+        "loli", "lolicon", "shotacon", "jailbait", "sexo", "desnuda", "desnudas", "desnudo",
+        // Explicit terms that mostly turn up around male-oriented adult content. Single words that are also
+        // ordinary words (cock, dick, hung) are only blocked inside the phrases below.
+        "twink", "twinks", "bareback", "barebacking", "bussy", "dickpic", "dickpics", "cocksucker", "cocksuckers",
+        "cocksucking", "jerkoff", "gaysex", "gaycam", "gaycams", "dildo", "dildos"
+    ]
+
+    /// Word sequences that block a search, for terms that are fine on their own (`cock`, `dick`, `jerk`).
+    /// Matched against whole words in order, so `big cockatoo` and `hard dickens` are not caught.
+    static let queryPhrases: [String] = [
+        "jerk off", "jerking off", "dick pic", "dick pics", "big dick", "big cock", "hard dick", "hard cock",
+        "suck dick", "suck cock", "sucking dick", "sucking cock", "gay cam", "gay cams", "gay webcam",
+        "hung guys", "hung men", "hung twink", "hung twinks"
     ]
 
     /// Any word that merely contains one of these (`pornstar`, `xxxvideos`) also blocks a search.
@@ -196,6 +209,61 @@ public enum AdultSiteMatcher {
         return false
     }
 
+    // MARK: - Reddit communities and post titles
+
+    /// Fragments of a community name (`r/<name>`) that mark an adult community, so `r/SomethingPorn` and
+    /// `r/gonewild30plus` are caught without the page ever being judged by a model.
+    static let communityFragments: [String] = [
+        "porn", "xxx", "hentai", "nsfw", "gonewild", "rule34", "onlyfans", "nudes", "bareback", "twink",
+        "blowjob", "creampie", "cumshot", "gangbang", "bdsm", "bukkake", "deepthroat", "camgirl", "cocksuck",
+        "realgirls"
+    ]
+
+    /// Recovery and support communities that have those words in their names. Never blocked.
+    static let recoveryCommunities: [String] = [
+        "nofap", "pornfree", "pornaddiction", "pornrecovery", "stopporn", "quitporn", "antiporn", "fapstronaut"
+    ]
+
+    /// Whole words in a post's title (Reddit puts it in the address as `.../comments/<id>/<title_slug>`) that
+    /// mean the post is explicit media. Discussion words (`porn`, `sex`, `fuck`) are left out on purpose: they
+    /// turn up in advice threads and swearing, which are not adult content.
+    static let postTitleWords: Set<String> = [
+        "xxx", "hentai", "nsfw", "blowjob", "blowjobs", "handjob", "handjobs", "cumshot", "cumshots", "creampie",
+        "gangbang", "twink", "twinks", "bareback", "barebacking", "bukkake", "deepthroat", "onlyfans", "gonewild",
+        "nudes", "milf", "dildo", "dildos", "bussy", "cocksucker", "cocksucking", "pornstar", "pornstars"
+    ]
+
+    /// True for a Reddit page in an adult community, or for a post whose title says it is explicit media.
+    public static func isAdultCommunityPage(urlOrHost: String) -> Bool {
+        guard let host = host(from: urlOrHost), host == "reddit.com" || host.hasSuffix(".reddit.com") else { return false }
+        let lowered = Substring(trimmed(urlOrHost).lowercased())
+        guard let text = withoutScheme(lowered), let slash = text.firstIndex(of: "/") else { return false }
+        var path = text[slash...]
+        if let cut = path.firstIndex(where: { $0 == "?" || $0 == "#" }) { path = path[path.startIndex..<cut] }
+
+        let segments = path.split(separator: "/").map(String.init)
+        guard segments.count >= 2, segments[0] == "r" else { return false }
+
+        let community = segments[1]
+        if recoveryCommunities.contains(where: { community.contains($0) }) { return false }
+        if communityFragments.contains(where: { community.contains($0) }) { return true }
+
+        // /r/<community>/comments/<id>/<title_slug>
+        guard segments.count >= 5, segments[2] == "comments" else { return false }
+        var word = ""
+        var words: [String] = []
+        for character in segments[4] {
+            if character.isLetter || character.isNumber {
+                word.append(character)
+            } else if !word.isEmpty {
+                words.append(word)
+                word = ""
+            }
+        }
+        if !word.isEmpty { words.append(word) }
+        return words.contains { postTitleWords.contains($0) }
+    }
+
     static func containsAdultTerms(_ phrase: String) -> Bool {
         var word = ""
         var words: [String] = []
@@ -223,6 +291,9 @@ public enum AdultSiteMatcher {
             }
         }
         if runLength >= 3 { words.append(run) }
+
+        let sentence = " " + words.joined(separator: " ") + " "
+        for phrase in queryPhrases where sentence.contains(" " + phrase + " ") { return true }
 
         for word in words {
             for candidate in spellingVariants(of: word) {

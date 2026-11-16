@@ -24,7 +24,14 @@ public enum AdultContentScorer {
         "onlyfans": 3, "camgirl": 3, "camgirls": 3, "pornstar": 3, "pornstars": 3,
         "erotic": 2, "erotica": 2, "topless": 2, "boobs": 2, "tits": 2, "anal": 2, "slut": 2, "whore": 2,
         "fetish": 2, "horny": 2, "orgasm": 2, "masturbation": 2, "stripper": 2, "hardcore": 1,
-        "sex": 1, "sexy": 1, "sexual": 1
+        "sex": 1, "sexy": 1, "sexual": 1,
+        // Explicit terms that mostly turn up around male-oriented adult content. Only words that are not also
+        // everyday words: `cock`, `dick`, `cum`, `fuck` and friends are left out on purpose, because feeds and
+        // comment threads are full of them and a page of ordinary posts must never add up to adult content
+        // (adding them closed the Reddit home page several times in two minutes).
+        "twink": 3, "twinks": 3, "bareback": 3, "barebacking": 3, "bussy": 3, "cocksucker": 3, "cocksucking": 3,
+        "jerkoff": 3, "dickpic": 3, "dickpics": 3, "cumshots": 3, "blowjobs": 3, "handjobs": 3, "bukkake": 3,
+        "deepthroat": 3, "gaysex": 3, "dildo": 2, "dildos": 2
     ]
 
     /// Words starting with these count too (`pornography`, `pornographic`, `pornhub`).
@@ -37,16 +44,19 @@ public enum AdultContentScorer {
         ("are you 18", 6), ("18+ only", 6), ("adults only", 4), ("mature content", 3), ("18+ content", 6)
     ]
 
-    /// The page's score and how many different explicit terms made it up.
-    static func analyse(_ text: String) -> (score: Int, distinct: Int) {
+    /// The page's score, how many different explicit terms made it up, and the biggest contributors
+    /// (`term x count`, most points first) so a block can be explained afterwards.
+    static func analyse(_ text: String) -> (score: Int, distinct: Int, terms: [String]) {
         // Long pages are cut off: the top of the page is where titles and age gates live.
         let lowered = String(text.prefix(20_000)).lowercased()
         var total = 0
         var distinct = 0
+        var contributions: [(name: String, points: Int)] = []
 
         for (phrase, weight) in phrases where lowered.contains(phrase) {
             total += weight
             distinct += 2
+            contributions.append(("\"\(phrase)\"", weight))
         }
 
         var counts: [String: Int] = [:]
@@ -76,8 +86,11 @@ public enum AdultContentScorer {
             let weight = wordWeights[term] ?? wordPrefixes.first(where: { $0.prefix == term })?.weight ?? 0
             total += weight * min(count, maxCountPerTerm)
             distinct += 1
+            contributions.append(("\(term)x\(min(count, maxCountPerTerm))", weight * min(count, maxCountPerTerm)))
         }
-        return (total, distinct)
+        let terms = contributions.sorted { $0.points != $1.points ? $0.points > $1.points : $0.name < $1.name }
+            .prefix(8).map { $0.name }
+        return (total, distinct, Array(terms))
     }
 
     public static func score(_ text: String) -> Int {

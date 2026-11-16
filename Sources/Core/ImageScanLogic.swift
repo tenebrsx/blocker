@@ -20,6 +20,10 @@ public enum ImageScanLogic {
     public static let searchHitScore = 0.998
     public static let searchSuspectScore = 0.995
 
+    /// A score at or above this that is still below the bar is written to the block log (at most every 20
+    /// seconds), so that what the model gives to real pictures it missed can be seen and the bar tuned.
+    public static let noteScore = 0.5
+
     /// How much the screen must change (mean brightness difference of a tiny thumbnail, 0...1) before the
     /// model is run again. About 1.5% is a few brightness levels on average: a new picture or a scroll
     /// clears it, a blinking cursor or a clock does not.
@@ -49,19 +53,35 @@ public enum ImageScanLogic {
         public let height: Int
     }
 
-    /// The whole screen plus a 2x2 grid. Shrinking a whole screen to the model's input size would lose a
-    /// small picture (a grid of search thumbnails, say), so each quarter is looked at as well.
+    /// The long side, in pixels, of the screenshot the model looks at. A picture in a feed (Reddit, X) takes up
+    /// only a slice of the screen, so at the old 640 px a post's image was a blurry 120 px patch; the model
+    /// misses what it can't make out. 1280 px keeps such a picture at a size the model can read.
+    public static let captureLongSide = 1280.0
+
+    /// `columns` x `rows` equal tiles, row by row. Edges are rounded so the tiles cover the image exactly.
+    public static func grid(width: Int, height: Int, columns: Int, rows: Int) -> [Tile] {
+        var result: [Tile] = []
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let left = column * width / columns
+                let right = (column + 1) * width / columns
+                let top = row * height / rows
+                let bottom = (row + 1) * height / rows
+                result.append(Tile(x: left, y: top, width: right - left, height: bottom - top))
+            }
+        }
+        return result
+    }
+
+    /// The whole screen, a 2x2 grid and a 3x3 grid (14 looks). Shrinking a whole screen to the model's input
+    /// size loses a small picture, and a picture in a feed sits in the middle of the screen, spread across
+    /// several quarters; the finer grid gives it a tile of its own. Order: whole, then 2x2 row by row, then
+    /// 3x3 row by row.
     public static func tiles(width: Int, height: Int) -> [Tile] {
-        guard width >= 2, height >= 2 else { return [Tile(x: 0, y: 0, width: max(width, 1), height: max(height, 1))] }
-        let halfWidth = width / 2
-        let halfHeight = height / 2
-        return [
-            Tile(x: 0, y: 0, width: width, height: height),
-            Tile(x: 0, y: 0, width: halfWidth, height: halfHeight),
-            Tile(x: halfWidth, y: 0, width: width - halfWidth, height: halfHeight),
-            Tile(x: 0, y: halfHeight, width: halfWidth, height: height - halfHeight),
-            Tile(x: halfWidth, y: halfHeight, width: width - halfWidth, height: height - halfHeight)
-        ]
+        guard width >= 3, height >= 3 else { return [Tile(x: 0, y: 0, width: max(width, 1), height: max(height, 1))] }
+        return [Tile(x: 0, y: 0, width: width, height: height)]
+            + grid(width: width, height: height, columns: 2, rows: 2)
+            + grid(width: width, height: height, columns: 3, rows: 3)
     }
 
     // MARK: - Verdict

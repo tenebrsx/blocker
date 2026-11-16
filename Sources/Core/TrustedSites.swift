@@ -34,6 +34,28 @@ public enum TrustedSites {
         "reuters.com", "apnews.com", "espn.com", "imdb.com", "medium.com", "quora.com", "steampowered.com"
     ]
 
+    /// Social feeds: pages that stitch together many unrelated posts and comments, so the words on one screen
+    /// say nothing about the page itself (the Reddit home page was closed repeatedly by the page-text check).
+    /// These are still watched by the address rules, the community rule and the image scanner; only the
+    /// page-text score skips them.
+    static let feedHosts: [String] = [
+        "reddit.com", "x.com", "twitter.com", "facebook.com", "instagram.com", "threads.net", "bsky.app",
+        "pinterest.com"
+    ]
+
+    /// True when the page-text score must not judge this page: an everyday site, or a social feed whose
+    /// address is not itself adult. Adult sites, adult searches and adult communities are never excused.
+    public static func skipsPageTextScan(urlOrHost: String) -> Bool {
+        if isTrusted(urlOrHost: urlOrHost) { return true }
+        guard let host = AdultSiteMatcher.host(from: urlOrHost) else { return false }
+        if AdultSiteMatcher.isAdult(urlOrHost: urlOrHost) || AdultSiteMatcher.isAdultSearch(urlOrHost: urlOrHost)
+            || AdultSiteMatcher.isAdultCommunityPage(urlOrHost: urlOrHost) {
+            return false
+        }
+        for entry in feedHosts where host == entry || host.hasSuffix("." + entry) { return true }
+        return false
+    }
+
     /// True if the page is on an everyday site that should never be closed or blacked out on a judgement
     /// call. Needs a URL or host; anything unreadable is not trusted.
     public static func isTrusted(urlOrHost: String) -> Bool {

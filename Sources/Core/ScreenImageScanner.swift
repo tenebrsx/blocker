@@ -59,6 +59,7 @@ public final class ScreenImageScanner {
     private var suspectPending = false
     private var frontIsSearchResults = false     // set each scan: a search engine's page is in front
     private var lastIgnoredLog = Date.distantPast
+    private var lastTraceLog = Date.distantPast
 
     private let queue = DispatchQueue(label: "com.wordblocker.imagescan", qos: .utility)
     private var observers: [NSObjectProtocol] = []
@@ -155,15 +156,23 @@ public final class ScreenImageScanner {
 
             let scores = classify(image)
             let strict = frontIsSearchResults
+
+            // Tuning aid, off unless `defaults write com.wordblocker.app WordBlocker.ScanTrace -bool true`:
+            // the scores of a scan, at most every 4 s, so the bar can be set from what the model really says.
+            if UserDefaults.standard.bool(forKey: "WordBlocker.ScanTrace"), Date().timeIntervalSince(lastTraceLog) > 4 {
+                lastTraceLog = Date()
+                await logScan("trace", scores: scores, strict: strict)
+            }
+
             let verdict = ImageScanLogic.verdict(scores: scores, previouslySuspect: suspectPending, onSearchResults: strict)
             switch verdict {
             case .clear:
-                // A score the normal rules would have acted on, ignored because this is a search page. Logged
-                // (at most every 20 s) so the log shows what the stricter rule saved.
-                if strict, (scores.max() ?? 0) >= ImageScanLogic.suspectScore,
-                   Date().timeIntervalSince(lastIgnoredLog) > 20 {
+                // A middling score is not acted on, but it is logged (at most every 20 s) so the log shows what
+                // the model made of a picture it missed, and what the stricter search-page rule held back.
+                if (scores.max() ?? 0) >= ImageScanLogic.noteScore, Date().timeIntervalSince(lastIgnoredLog) > 20 {
                     lastIgnoredLog = Date()
-                    await logScan("ignored (search page, below the strict bar)", scores: scores, strict: strict)
+                    let note = strict ? "below the strict search-page bar" : "below the bar, not acted on"
+                    await logScan("mid-score (\(note))", scores: scores, strict: strict)
                 }
                 suspectPending = false
             case .suspect:
@@ -278,7 +287,7 @@ public final class ScreenImageScanner {
             let filter = SCContentFilter(display: display, excludingWindows: own)
 
             let configuration = SCStreamConfiguration()
-            let scale = 640.0 / Double(max(display.width, display.height))
+            let scale = ImageScanLogic.captureLongSide / Double(max(display.width, display.height))
             configuration.width = max(1, Int(Double(display.width) * scale))
             configuration.height = max(1, Int(Double(display.height) * scale))
             configuration.showsCursor = false
@@ -326,14 +335,17 @@ public final class ScreenImageScanner {
 
     // MARK: - Log
 
-    /// Writes what the model saw to the block log (`blocks.log`): the five scores (whole screen, then the
-    /// four quarters), which app and page were in front, and whether the strict search-page bar applied.
+    /// Writes what the model saw to the block log (`blocks.log`): the highest score and the tile it came from,
+    /// every score (whole screen, then the 2x2 grid, then the 3x3 grid, each row by row), which app and page
+    /// were in front, and whether the strict search-page bar applied.
     private func logScan(_ what: String, scores: [Double], strict: Bool) async {
         let (page, app) = await MainActor.run {
             (BrowserMonitor.shared.frontPageURL, NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")
         }
-        let list = scores.map { String(format: "%.4f", $0) }.joined(separator: ", ")
-        BlockLog.record("image-scanner", "\(what)  scores(whole, top-left, top-right, bottom-left, bottom-right)=[\(list)]  strict=\(strict)  app=\(app)  page=\(BlockLog.describePage(page))")
+        let list = scores.map { String(format: "%.3f", $0) }.joined(separator: " ")
+        let top = scores.max() ?? 0
+        let topTile = scores.firstIndex(of: top) ?? 0
+        BlockLog.record("image-scanner", "\(what)  top=\(String(format: "%.4f", top)) tile=\(topTile)  scores(whole | 2x2 | 3x3)=[\(list)]  strict=\(strict)  app=\(app)  page=\(BlockLog.describePage(page))")
     }
 
     // MARK: - Response
