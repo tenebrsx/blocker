@@ -223,6 +223,23 @@ struct TestRunner {
         assertTest(generated.count == 2000, "Generates the requested number of problems")
         assertTest(generated.allSatisfy { $0.answer > 0 }, "Every generated answer is positive")
         assertTest(Set(generated.map { $0.prompt }).count > 500, "Problems vary")
+        // Quick mental math: only + and −, numbers under 100, every running total stays positive and
+        // re-evaluating the prompt gives the stored answer.
+        var quickMathOK = true
+        for problem in generated {
+            let parts = problem.prompt.split(separator: " ").map(String.init)
+            guard parts.count >= 5, parts.count % 2 == 1, var running = Int(parts[0]) else { quickMathOK = false; break }
+            var i = 1
+            while i < parts.count {
+                guard let amount = Int(parts[i + 1]), amount < 100, parts[i] == "+" || parts[i] == "−" else { quickMathOK = false; break }
+                running += parts[i] == "+" ? amount : -amount
+                if running <= 0 { quickMathOK = false; break }
+                i += 2
+            }
+            if !quickMathOK || running != problem.answer || running >= 300 { quickMathOK = false; break }
+        }
+        assertTest(quickMathOK, "Problems are quick add/subtract chains of 3-4 numbers with positive steps")
+        assertTest(!generated.contains { $0.prompt.contains("×") || $0.prompt.contains("÷") || $0.prompt.contains("(") }, "No multiplication, division or brackets")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 0) == 5, "First unlock of the day needs 5 problems")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 1) == 7, "Second unlock needs 7")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 2) == 10 && MathChallenge.problemCount(forUnlockNumber: 8) == 10, "Third and later unlocks need 10")

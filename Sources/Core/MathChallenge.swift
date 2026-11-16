@@ -26,31 +26,25 @@ public enum MathChallenge {
         }
     }
 
-    /// Multi-step integer problems with positive answers, e.g. `(27 × 13) + 58`.
+    /// Quick mental-math chains of two-digit additions and subtractions, e.g. `47 + 28 − 15 + 9`.
+    /// Three to four numbers, no multiplication, and the running total never drops to zero or below,
+    /// so every step and the final answer are positive.
     public static func makeProblem<G: RandomNumberGenerator>(using generator: inout G) -> MathProblem {
-        switch Int.random(in: 0..<4, using: &generator) {
-        case 0:
-            let a = Int.random(in: 12...39, using: &generator)
-            let b = Int.random(in: 6...15, using: &generator)
-            let c = Int.random(in: 11...99, using: &generator)
-            return MathProblem(prompt: "(\(a) × \(b)) + \(c)", answer: a * b + c)
-        case 1:
-            let a = Int.random(in: 11...59, using: &generator)
-            let b = Int.random(in: 11...59, using: &generator)
-            let c = Int.random(in: 3...9, using: &generator)
-            return MathProblem(prompt: "(\(a) + \(b)) × \(c)", answer: (a + b) * c)
-        case 2:
-            // a × b is at least 72, and c stays below that, so the answer is always positive.
-            let a = Int.random(in: 12...39, using: &generator)
-            let b = Int.random(in: 6...15, using: &generator)
-            let c = Int.random(in: 11...70, using: &generator)
-            return MathProblem(prompt: "(\(a) × \(b)) − \(c)", answer: a * b - c)
-        default:
-            let divisor = Int.random(in: 6...15, using: &generator)
-            let quotient = Int.random(in: 12...49, using: &generator)
-            let addend = Int.random(in: 11...99, using: &generator)
-            return MathProblem(prompt: "(\(divisor * quotient) ÷ \(divisor)) + \(addend)", answer: quotient + addend)
+        var total = Int.random(in: 20...80, using: &generator)
+        var prompt = String(total)
+        for _ in 0..<Int.random(in: 2...3, using: &generator) {
+            let canSubtract = total > 10
+            if canSubtract && Bool.random(using: &generator) {
+                let amount = Int.random(in: 6...min(49, total - 1), using: &generator)
+                total -= amount
+                prompt += " − \(amount)"
+            } else {
+                let amount = Int.random(in: 6...49, using: &generator)
+                total += amount
+                prompt += " + \(amount)"
+            }
         }
+        return MathProblem(prompt: prompt, answer: total)
     }
 
     public static func generate<G: RandomNumberGenerator>(count: Int, using generator: inout G) -> [MathProblem] {
