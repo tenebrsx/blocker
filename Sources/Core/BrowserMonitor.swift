@@ -59,7 +59,17 @@ public final class BrowserMonitor {
 
     /// Keeps macOS App Nap from throttling our timers while we sit in the menu bar.
     /// Without this, background polling slowed to once every several seconds or more.
+    /// (Deliberately not `.latencyCritical`: that also switches off timer coalescing, which costs battery
+    /// and isn't needed here. Keystrokes arrive through the event tap, not a timer.)
     private var activityToken: NSObjectProtocol?
+
+    /// How often the fallback poll runs. Fast while a browser is in front, where a missed navigation
+    /// matters; slow otherwise, because switching to a browser is announced by `appActivated` anyway and
+    /// each tick costs a Launch Services lookup. Stays fast while a gate prompt is up so its state is
+    /// reconciled promptly.
+    private static let activePollInterval: TimeInterval = 0.3
+    private static let idlePollInterval: TimeInterval = 1.5
+    private var pollInterval: TimeInterval = BrowserMonitor.activePollInterval
 
     /// Active timers for temporarily allowed websites. When a timer expires, it revokes the allowance
     /// and automatically closes all tabs of that domain, regardless of where the user is in the browser.
@@ -77,7 +87,7 @@ public final class BrowserMonitor {
 
         if activityToken == nil {
             activityToken = ProcessInfo.processInfo.beginActivity(
-                options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+                options: [.userInitiatedAllowingIdleSystemSleep],
                 reason: "Word Blocker is monitoring browsers for blocked websites"
             )
         }
@@ -94,13 +104,26 @@ public final class BrowserMonitor {
 
         // Fallback poll in .common mode (keeps firing during menu/modal tracking). The AX observer
         // catches most navigations instantly; this covers anything it misses.
-        let timer = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
+        pollInterval = BrowserMonitor.activePollInterval
+        installPollTimer()
+        inspectActiveBrowser()
+    }
+
+    private func installPollTimer() {
+        pollTimer?.invalidate()
+        let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.inspectActiveBrowser()
         }
-        timer.tolerance = 0.05
+        timer.tolerance = pollInterval / 6   // 0.05s at 0.3s, 0.25s at 1.5s
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
-        inspectActiveBrowser()
+    }
+
+    /// Switches the fallback poll between its fast and slow rate. No-op when the rate is already right.
+    private func setPollInterval(_ interval: TimeInterval) {
+        guard isMonitoring, interval != pollInterval else { return }
+        pollInterval = interval
+        installPollTimer()
     }
 
     /// Stops monitoring browser activity.
@@ -184,9 +207,12 @@ public final class BrowserMonitor {
               let bundleId = frontApp.bundleIdentifier,
               BrowserLockdown.isMonitored(bundleId) else {
             frontPageURL = nil
+            // Nothing to scan: poll slowly. Switching to a browser fires `appActivated`, which checks at once.
+            setPollInterval(isGatePromptActive ? BrowserMonitor.activePollInterval : BrowserMonitor.idlePollInterval)
             return
         }
 
+        setPollInterval(BrowserMonitor.activePollInterval)
         let pid = frontApp.processIdentifier
         attachObserver(pid: pid)
         // Scanning never pauses, even with a pop-up on screen: adult sites must be caught at all times,
