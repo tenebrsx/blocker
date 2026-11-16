@@ -63,6 +63,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private var newWebNoteField: NSTextField!
     private var gateCheckbox: NSButton!
     private var closeTabsCheckbox: NSButton!
+    private var unlockWaitCheckbox: NSButton!
     private var webNoteCheckbox: NSButton!
     private var currentWebSearch: String = ""
 
@@ -401,15 +402,22 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         closeTabsCheckbox.frame = NSRect(x: 250, y: 232, width: 260, height: 18)
         websitesView.addSubview(closeTabsCheckbox)
 
+        unlockWaitCheckbox = NSButton(checkboxWithTitle: "Wait \(Int(MathChallenge.coolOffSeconds)) seconds before the unlock problems start", target: self, action: #selector(unlockWaitToggled(_:)))
+        unlockWaitCheckbox.toolTip = "A pause before the math problems appear when you unlock a blocked site. Turning it off takes the \(MathChallenge.strictProblemCount)-problem challenge. Quitting, turning protection off and loosening settings always keep their wait."
+        unlockWaitCheckbox.state = WordStore.shared.requireUnlockWait ? .on : .off
+        unlockWaitCheckbox.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        unlockWaitCheckbox.frame = NSRect(x: 12, y: 210, width: 490, height: 18)
+        websitesView.addSubview(unlockWaitCheckbox)
+
         // Search Bar for Blocked Websites
-        webSearchField = NSSearchField(frame: NSRect(x: 12, y: 202, width: 508, height: 26))
+        webSearchField = NSSearchField(frame: NSRect(x: 12, y: 180, width: 508, height: 26))
         webSearchField.placeholderString = "Search blocked websites or notes..."
         webSearchField.target = self
         webSearchField.action = #selector(webSearchChanged(_:))
         websitesView.addSubview(webSearchField)
 
         // Websites Table View
-        let webScroll = NSScrollView(frame: NSRect(x: 12, y: 48, width: 508, height: 148))
+        let webScroll = NSScrollView(frame: NSRect(x: 12, y: 48, width: 508, height: 126))
         webScroll.hasVerticalScroller = true
         webScroll.borderType = .bezelBorder
 
@@ -956,6 +964,19 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         sender.state = .on   // stays on until the challenge is passed
         requireMath(toDo: "turn off the Access Gate") {
             WordStore.shared.requireAllowToEnter = false
+            sender.state = .off
+        }
+    }
+
+    /// Skipping the wait loosens protection, so it takes the strict math challenge; turning it back on is instant.
+    @objc private func unlockWaitToggled(_ sender: NSButton) {
+        if sender.state == .on {
+            WordStore.shared.requireUnlockWait = true
+            return
+        }
+        sender.state = .on   // stays on until the challenge is passed
+        requireMath(toDo: "skip the \(Int(MathChallenge.coolOffSeconds))-second wait when unlocking a site") {
+            WordStore.shared.requireUnlockWait = false
             sender.state = .off
         }
     }

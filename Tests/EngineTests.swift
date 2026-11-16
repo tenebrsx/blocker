@@ -183,6 +183,11 @@ struct TestRunner {
         // -------------------------------------------------------------
         print("\n--- Test 10: Access Gate & Temporary Allowance ---")
         assertTest(store.requireAllowToEnter == true, "Access Gate enabled by default")
+        assertTest(store.requireUnlockWait == true, "The 30-second unlock wait is on by default")
+        store.requireUnlockWait = false
+        assertTest(store.requireUnlockWait == false, "The unlock wait can be turned off")
+        store.requireUnlockWait = true
+        assertTest(store.requireUnlockWait == true, "...and back on")
         store.clearTemporaryAllowances()
 
         assertTest(!store.isWebsiteTemporarilyAllowed("twitter.com"), "Twitter not yet allowed")
@@ -223,23 +228,24 @@ struct TestRunner {
         assertTest(generated.count == 2000, "Generates the requested number of problems")
         assertTest(generated.allSatisfy { $0.answer > 0 }, "Every generated answer is positive")
         assertTest(Set(generated.map { $0.prompt }).count > 500, "Problems vary")
-        // Quick mental math: only + and −, numbers under 100, every running total stays positive and
-        // re-evaluating the prompt gives the stored answer.
-        var quickMathOK = true
+        // Quick mental math: exactly two numbers and one + or −, nothing over two digits (the answer
+        // included), and re-evaluating the prompt gives the stored answer.
+        var twoNumbersOK = true
+        var sawAddition = false, sawSubtraction = false
         for problem in generated {
             let parts = problem.prompt.split(separator: " ").map(String.init)
-            guard parts.count >= 5, parts.count % 2 == 1, var running = Int(parts[0]) else { quickMathOK = false; break }
-            var i = 1
-            while i < parts.count {
-                guard let amount = Int(parts[i + 1]), amount < 100, parts[i] == "+" || parts[i] == "−" else { quickMathOK = false; break }
-                running += parts[i] == "+" ? amount : -amount
-                if running <= 0 { quickMathOK = false; break }
-                i += 2
+            guard parts.count == 3, let a = Int(parts[0]), let b = Int(parts[2]), parts[1] == "+" || parts[1] == "−" else {
+                twoNumbersOK = false; break
             }
-            if !quickMathOK || running != problem.answer || running >= 300 { quickMathOK = false; break }
+            let value = parts[1] == "+" ? a + b : a - b
+            if parts[1] == "+" { sawAddition = true } else { sawSubtraction = true }
+            if a > 99 || b > 99 || a < 6 || b < 6 || value != problem.answer || value < 5 || value > 99 { twoNumbersOK = false; break }
         }
-        assertTest(quickMathOK, "Problems are quick add/subtract chains of 3-4 numbers with positive steps")
+        assertTest(twoNumbersOK, "Every problem is two numbers (two digits at most) and one + or −, with a 5-99 answer")
+        assertTest(sawAddition && sawSubtraction, "Both additions and subtractions appear")
         assertTest(!generated.contains { $0.prompt.contains("×") || $0.prompt.contains("÷") || $0.prompt.contains("(") }, "No multiplication, division or brackets")
+        assertTest(MathChallenge.siteUnlockCoolOff(waitEnabled: true) == MathChallenge.coolOffSeconds && MathChallenge.coolOffSeconds == 30, "Site unlock waits 30 seconds by default")
+        assertTest(MathChallenge.siteUnlockCoolOff(waitEnabled: false) == 0, "...and not at all when the wait is turned off")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 0) == 5, "First unlock of the day needs 5 problems")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 1) == 7, "Second unlock needs 7")
         assertTest(MathChallenge.problemCount(forUnlockNumber: 2) == 10 && MathChallenge.problemCount(forUnlockNumber: 8) == 10, "Third and later unlocks need 10")

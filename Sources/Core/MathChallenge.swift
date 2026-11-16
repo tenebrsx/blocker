@@ -26,25 +26,25 @@ public enum MathChallenge {
         }
     }
 
-    /// Quick mental-math chains of two-digit additions and subtractions, e.g. `47 + 28 − 15 + 9`.
-    /// Three to four numbers, no multiplication, and the running total never drops to zero or below,
-    /// so every step and the final answer are positive.
+    /// Quick mental math: exactly two numbers and one `+` or `−`, e.g. `47 + 28` or `63 − 19`. Nothing in
+    /// the problem or its answer goes past two digits (the answer is between 5 and 99), so it never needs
+    /// a pen, paper or calculator.
     public static func makeProblem<G: RandomNumberGenerator>(using generator: inout G) -> MathProblem {
-        var total = Int.random(in: 20...80, using: &generator)
-        var prompt = String(total)
-        for _ in 0..<Int.random(in: 2...3, using: &generator) {
-            let canSubtract = total > 10
-            if canSubtract && Bool.random(using: &generator) {
-                let amount = Int.random(in: 6...min(49, total - 1), using: &generator)
-                total -= amount
-                prompt += " − \(amount)"
-            } else {
-                let amount = Int.random(in: 6...49, using: &generator)
-                total += amount
-                prompt += " + \(amount)"
-            }
+        if Bool.random(using: &generator) {
+            let a = Int.random(in: 11...88, using: &generator)
+            let b = Int.random(in: 6...(99 - a), using: &generator)   // a + b stays at 99 or less
+            return MathProblem(prompt: "\(a) + \(b)", answer: a + b)
         }
-        return MathProblem(prompt: prompt, answer: total)
+        let a = Int.random(in: 21...99, using: &generator)
+        let b = Int.random(in: 6...(a - 5), using: &generator)        // a − b stays at 5 or more
+        return MathProblem(prompt: "\(a) − \(b)", answer: a - b)
+    }
+
+    /// The wait before the problems start when unlocking a blocked site: the usual 30 seconds, or none when
+    /// the user has turned that wait off in Settings. (Quitting, turning protection off and loosening
+    /// settings always keep their wait.)
+    public static func siteUnlockCoolOff(waitEnabled: Bool) -> TimeInterval {
+        waitEnabled ? coolOffSeconds : 0
     }
 
     public static func generate<G: RandomNumberGenerator>(count: Int, using generator: inout G) -> [MathProblem] {

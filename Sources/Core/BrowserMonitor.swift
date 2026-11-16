@@ -575,7 +575,8 @@ public final class BrowserMonitor {
             title: "Unlock \(domain)",
             reason: "Solve \(count) problems in a row to allow \(domain) for \(minutes) minutes. "
                 + "It will be closed again when the time is up.",
-            problemCount: count
+            problemCount: count,
+            coolOff: MathChallenge.siteUnlockCoolOff(waitEnabled: WordStore.shared.requireUnlockWait)
         ) { [weak self] passed in
             guard let self = self else { return }
             self.isGatePromptActive = false

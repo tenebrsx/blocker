@@ -14,6 +14,7 @@ public final class WordStore {
     private let showWebsiteNotesKey = "WordBlocker.ShowWebsiteNotes"
     private let closeBlockedTabsKey = "WordBlocker.CloseBlockedTabs"
     private let requireAllowToEnterKey = "WordBlocker.RequireAllowToEnter"
+    private let requireUnlockWaitKey = "WordBlocker.RequireUnlockWait"
     private let cinemaModeEnabledKey = "WordBlocker.CinemaModeEnabled"
     private let cinemaModeMessageKey = "WordBlocker.CinemaModeMessage"
     private let isEnabledKey = "WordBlocker.IsEnabled"
@@ -174,6 +175,18 @@ public final class WordStore {
         }
         set {
             defaults.set(newValue, forKey: requireAllowToEnterKey)
+        }
+    }
+
+    /// Whether unlocking a blocked site starts with the 30-second wait before the math problems. On by
+    /// default; turning it off is a loosening, so Settings asks for the strict math challenge first.
+    public var requireUnlockWait: Bool {
+        get {
+            if defaults.object(forKey: requireUnlockWaitKey) == nil { return true }
+            return defaults.bool(forKey: requireUnlockWaitKey)
+        }
+        set {
+            defaults.set(newValue, forKey: requireUnlockWaitKey)
         }
     }
 
