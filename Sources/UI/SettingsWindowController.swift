@@ -29,6 +29,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private var soundCheckbox: NSButton!
     private var fuzzyCheckbox: NSButton!
     private var loginCheckbox: NSButton!
+    private var watchdogCheckbox: NSButton!
     private var popupNoteCheckbox: NSButton!
 
     // Tab 1: Blocked Words & Notes
@@ -67,7 +68,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     private convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 814),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 838),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -84,7 +85,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
         window.contentView = contentView
 
-        var currentY: CGFloat = 769
+        var currentY: CGFloat = 793
 
         // Title Header
         let titleLabel = NSTextField(labelWithString: "🛡️ Word Blocker")
@@ -157,6 +158,14 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         loginCheckbox.toolTip = "Runs Word Blocker whenever you log in and brings it straight back if it is force-quit (Activity Monitor, kill). Turning this on or off restarts the app once. Turning it off needs the math challenge."
         loginCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
         contentView.addSubview(loginCheckbox)
+
+        currentY -= 24
+
+        watchdogCheckbox = NSButton(checkboxWithTitle: "Unkillable mode (needs your Mac password)", target: self, action: #selector(watchdogToggled(_:)))
+        watchdogCheckbox.state = Watchdog.isInstalled ? .on : .off
+        watchdogCheckbox.toolTip = "Installs a small system helper that runs as an administrator, so Force Quit and kill can't stop it, and it reopens Word Blocker within about half a second if the app is killed. With it on, quitting Word Blocker needs the math challenge and your Mac password. Turning it off needs both too."
+        watchdogCheckbox.frame = NSRect(x: 24, y: currentY, width: 500, height: 22)
+        contentView.addSubview(watchdogCheckbox)
 
         currentY -= 330
 
@@ -670,6 +679,52 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         requireMath(toDo: "turn off start-at-login and relaunch-if-force-quit") {
             LoginItem.disableAndRestart()
         }
+    }
+
+    /// Unkillable mode: installing needs only the Mac's administrator password (tightening is instant);
+    /// removing it needs the math challenge as well as the password.
+    @objc private func watchdogToggled(_ sender: NSButton) {
+        if sender.state == .on {
+            sender.isEnabled = false
+            DispatchQueue.global().async { [weak self] in
+                let installed = Watchdog.install()
+                DispatchQueue.main.async {
+                    sender.isEnabled = true
+                    sender.state = installed ? .on : .off
+                    if !installed {
+                        self?.showWatchdogAlert(
+                            "Unkillable mode was not turned on",
+                            "It needs your Mac's administrator password. The prompt was cancelled, the password was wrong, or this account isn't an administrator."
+                        )
+                    }
+                }
+            }
+            return
+        }
+        sender.state = .on   // stays on until the challenge and the password are both done
+        requireMath(toDo: "turn off unkillable mode") { [weak self] in
+            sender.isEnabled = false
+            DispatchQueue.global().async {
+                let removed = Watchdog.uninstall()
+                DispatchQueue.main.async {
+                    sender.isEnabled = true
+                    sender.state = removed ? .off : .on
+                    if !removed {
+                        self?.showWatchdogAlert(
+                            "Unkillable mode is still on",
+                            "Turning it off needs your Mac's administrator password, and it wasn't entered."
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func showWatchdogAlert(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.runModal()
     }
 
     // Blocked Words & Notes

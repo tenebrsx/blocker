@@ -1,14 +1,21 @@
 /// Scores the visible text of a web page for adult content. This is the safety net for adult pages on
 /// sites no blocklist knows about: titles, headings, link text and image descriptions on such pages are full
 /// of explicit words, and they usually sit behind an "are you 18?" gate.
+///
+/// It is deliberately hard to trip: a page needs a high score AND several different explicit terms, so a
+/// news story, a comment section or a health article that uses a few risqué words is left alone. (Everyday
+/// sites such as YouTube are skipped entirely; see `TrustedSites`.)
 /// Pure Swift (no Foundation) for easy testing.
 public enum AdultContentScorer {
 
-    /// A page scoring at least this much is treated as adult content.
-    public static let threshold = 12
+    /// A page scoring at least this much, from enough different terms, is treated as adult content.
+    public static let threshold = 18
+
+    /// How many different explicit terms a page needs (a warning phrase counts as two).
+    public static let minimumDistinctTerms = 4
 
     /// An explicit word counts at most this many times, so one repeated word can't trip it alone.
-    static let maxCountPerTerm = 3
+    static let maxCountPerTerm = 2
 
     /// Exact words and how much each is worth per occurrence.
     static let wordWeights: [String: Int] = [
@@ -30,12 +37,17 @@ public enum AdultContentScorer {
         ("are you 18", 6), ("18+ only", 6), ("adults only", 4), ("mature content", 3), ("18+ content", 6)
     ]
 
-    public static func score(_ text: String) -> Int {
+    /// The page's score and how many different explicit terms made it up.
+    static func analyse(_ text: String) -> (score: Int, distinct: Int) {
         // Long pages are cut off: the top of the page is where titles and age gates live.
         let lowered = String(text.prefix(20_000)).lowercased()
         var total = 0
+        var distinct = 0
 
-        for (phrase, weight) in phrases where lowered.contains(phrase) { total += weight }
+        for (phrase, weight) in phrases where lowered.contains(phrase) {
+            total += weight
+            distinct += 2
+        }
 
         var counts: [String: Int] = [:]
         var word = ""
@@ -63,11 +75,17 @@ public enum AdultContentScorer {
         for (term, count) in counts {
             let weight = wordWeights[term] ?? wordPrefixes.first(where: { $0.prefix == term })?.weight ?? 0
             total += weight * min(count, maxCountPerTerm)
+            distinct += 1
         }
-        return total
+        return (total, distinct)
+    }
+
+    public static func score(_ text: String) -> Int {
+        analyse(text).score
     }
 
     public static func isAdultContent(_ text: String) -> Bool {
-        score(text) >= threshold
+        let result = analyse(text)
+        return result.score >= threshold && result.distinct >= minimumDistinctTerms
     }
 }

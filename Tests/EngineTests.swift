@@ -327,6 +327,28 @@ struct TestRunner {
         assertTest(!AdultContentScorer.isAdultContent("Inbox (3) - Gmail. Meeting notes for Monday. Weather in Essex. Swift analytics dashboard."), "Ordinary page is not flagged")
         assertTest(!AdultContentScorer.isAdultContent("Sex education for teens: what parents should know about sexual health and puberty."), "Health article stays below the threshold")
         assertTest(!AdultContentScorer.isAdultContent("porn porn porn porn porn porn porn porn"), "One repeated word cannot trip it alone")
+        // Ordinary pages that use a few risqué words must never be flagged.
+        let youtubeLike = "Sexy Back - Justin Timberlake (Official Video). 1.2B views. Comments: so sexy, sex bomb, he is naked in this scene lol, Naked and Afraid is better. Up next: Sexy and I Know It; Nude descending a staircase"
+        assertTest(!AdultContentScorer.isAdultContent(youtubeLike), "A YouTube page with risqué titles and comments is not flagged")
+        let newsLike = "Report: nude photo leak, naked truth about the sexual harassment case. Sex crimes unit says the explicit content was shared online."
+        assertTest(!AdultContentScorer.isAdultContent(newsLike), "A news story about an adult-themed case is not flagged")
+        assertTest(!AdultContentScorer.isAdultContent("Swimwear sale: sexy bikini, topless sunbathing guide, nude beach etiquette"), "A shop or travel page with a few risqué words is not flagged")
+        assertTest(AdultContentScorer.isAdultContent("Free Porn Videos. XXX Hardcore Milf Anal Creampie Hentai. Pornstars on camera. Naked teens."), "A page packed with explicit terms is still flagged")
+        assertTest(AdultContentScorer.isAdultContent("Sexually explicit content. You must be 18 years of age or older to enter. Adult content."), "A warning-only age gate is still flagged")
+
+        // Everyday sites are never judged; adult sites and search engines never get that pass.
+        assertTest(TrustedSites.isTrusted(urlOrHost: "https://www.youtube.com/watch?v=abc"), "YouTube is trusted")
+        assertTest(TrustedSites.isTrusted(urlOrHost: "m.youtube.com") && TrustedSites.isTrusted(urlOrHost: "https://music.youtube.com/"), "YouTube subdomains are trusted")
+        assertTest(TrustedSites.isTrusted(urlOrHost: "https://en.wikipedia.org/wiki/Nude_(art)"), "Wikipedia is trusted")
+        assertTest(TrustedSites.isTrusted(urlOrHost: "https://www.amazon.com/s?k=swimsuit"), "Shopping sites are trusted")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://www.google.com/search?q=cats&udm=2"), "Google Images is NOT trusted: image results stay watched")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://www.bing.com/images/search?q=mountain"), "Bing Images is NOT trusted")
+        assertTest(TrustedSites.isTrusted(urlOrHost: "https://docs.google.com/document/d/1") && !TrustedSites.isTrusted(urlOrHost: "https://sites.google.com/x"), "Only the everyday parts of Google are trusted")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://notyoutube.com/"), "A look-alike host is not trusted")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://youtube.com.example.xxx/"), "A trusted name inside an adult host is not trusted")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://www.youtube.com/results?search_query=porn"), "An explicit search on a trusted site is still blocked")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: "https://pornhub.com/"), "An adult site is never trusted")
+        assertTest(!TrustedSites.isTrusted(urlOrHost: ""), "An unreadable address is not trusted")
 
         // -------------------------------------------------------------
         // Test 15: Disguised search terms, and safe image searches stay open
@@ -409,6 +431,43 @@ struct TestRunner {
         try? FileManager.default.removeItem(at: guardianTemp)
 
         // -------------------------------------------------------------
+        // Test 16c: Unkillable mode (root watchdog): installer text and process lookup
+        // -------------------------------------------------------------
+        print("\n--- Test 16c: Watchdog (unkillable mode) ---")
+        let watchdogPlist = Watchdog.plist(executable: Watchdog.installedExecutable, appPath: "/Applications/Word Blocker.app", uid: 501)
+        assertTest(watchdogPlist["Label"] as? String == "com.wordblocker.watchdog", "The watchdog has its own launchd label")
+        assertTest(watchdogPlist["KeepAlive"] as? Bool == true && watchdogPlist["RunAtLoad"] as? Bool == true, "The watchdog starts at boot and is restarted if it ever exits")
+        assertTest((watchdogPlist["ProgramArguments"] as? [String]) == [Watchdog.installedExecutable, "--watchdog", "/Applications/Word Blocker.app", "501"], "The watchdog is told which app and which user to guard")
+        assertTest(Watchdog.installedExecutable.hasPrefix("/Library/"), "The program that runs as root lives in a root-owned folder, not inside the user's app")
+
+        let installText = try! Watchdog.installScript(sourceExecutable: "/Applications/It's here/WordBlocker.app/Contents/MacOS/WordBlocker", appPath: "/Applications/Word Blocker.app", uid: 501)
+        assertTest(installText.hasPrefix("set -e;"), "The installer stops at the first failed step")
+        assertTest(installText.contains("trap "), "A failed install removes what it put down")
+        assertTest(installText.contains("'/Applications/It'\\''s here/WordBlocker.app/Contents/MacOS/WordBlocker'"), "A source path with a space and an apostrophe is quoted safely")
+        let bootoutAt = installText.range(of: "bootout")?.lowerBound
+        let copyAt = installText.range(of: "/bin/cp -f")?.lowerBound
+        let bootstrapAt = installText.range(of: "bootstrap system")?.lowerBound
+        assertTest(bootoutAt != nil && copyAt != nil && bootstrapAt != nil && bootoutAt! < copyAt! && copyAt! < bootstrapAt!, "The old helper is stopped before its file is replaced, and the new one is started last")
+        assertTest(installText.contains("chown -R root:wheel") && installText.contains("chmod 644"), "Installed files are owned by root and not writable by the user")
+        let carried = installText.components(separatedBy: "echo '")[1].components(separatedBy: "'")[0]
+        let carriedPlist = Data(base64Encoded: carried).flatMap { try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) } as? [String: Any]
+        assertTest((carriedPlist?["ProgramArguments"] as? [String])?.first == Watchdog.installedExecutable, "The launchd file travels inside the command and runs the root-owned copy")
+        assertTest(!installText.contains("/tmp"), "No temporary file is involved that another program could swap")
+
+        assertTest(Watchdog.stopScript.contains("bootout") && Watchdog.stopScript.hasSuffix("|| true"), "Stopping for a quit works even if the helper isn't loaded")
+        assertTest(Watchdog.uninstallScript.contains("rm -f") && Watchdog.uninstallScript.contains("rm -rf"), "Uninstalling removes the file and the folder")
+        let adminScript = Watchdog.appleScript(running: "echo \"hi\" \\ there")
+        assertTest(adminScript.hasPrefix("do shell script \"") && adminScript.hasSuffix("\" with administrator privileges"), "The installer is run through macOS's own administrator prompt")
+        assertTest(adminScript.contains("echo \\\"hi\\\" \\\\ there"), "Quotes and backslashes survive being wrapped in AppleScript")
+
+        var ownPathBuffer = [CChar](repeating: 0, count: 4096)
+        _ = proc_pidpath(getpid(), &ownPathBuffer, 4096)
+        let ownPath = String(cString: ownPathBuffer)
+        assertTest(Watchdog.pids(ofExecutable: ownPath, owner: getuid()).contains(getpid()), "The watchdog's process lookup finds a running program by its path and owner")
+        assertTest(Watchdog.pids(ofExecutable: "/no/such/program", owner: getuid()).isEmpty, "A program that isn't running is not found")
+        assertTest(Watchdog.consoleUser() != nil, "The owner of the screen can be read")
+
+        // -------------------------------------------------------------
         // Test 17: Screen image scanner decisions (change detection, tiles, verdicts, pacing)
         // -------------------------------------------------------------
         print("\n--- Test 17: Image Scan Logic ---")
@@ -427,9 +486,11 @@ struct TestRunner {
         assertTest(oddTiles.dropFirst().reduce(0) { $0 + $1.width * $1.height } == 641 * 401, "Odd screen sizes are still covered exactly")
 
         assertTest(ImageScanLogic.verdict(scores: [0.1, 0.2], previouslySuspect: false) == .clear, "Low scores are clear")
-        assertTest(ImageScanLogic.verdict(scores: [0.1, 0.95], previouslySuspect: false) == .explicit, "A very high score acts at once")
-        assertTest(ImageScanLogic.verdict(scores: [0.8], previouslySuspect: false) == .suspect, "A middling score is rechecked first")
-        assertTest(ImageScanLogic.verdict(scores: [0.8], previouslySuspect: true) == .explicit, "Two suspicious scans in a row act")
+        assertTest(ImageScanLogic.verdict(scores: [0.1, 0.995], previouslySuspect: false) == .explicit, "An overwhelming score acts at once")
+        assertTest(ImageScanLogic.verdict(scores: [0.95], previouslySuspect: false) == .suspect, "A high score is rechecked first")
+        assertTest(ImageScanLogic.verdict(scores: [0.95], previouslySuspect: true) == .explicit, "Two high scans in a row act")
+        assertTest(ImageScanLogic.verdict(scores: [0.9], previouslySuspect: false) == .clear, "A score of 0.9 no longer counts: films and beach photos score that")
+        assertTest(ImageScanLogic.verdict(scores: [0.9], previouslySuspect: true) == .clear, "...even on a second look")
         assertTest(ImageScanLogic.verdict(scores: [], previouslySuspect: false) == .clear, "No scores means clear")
 
         assertTest(ImageScanLogic.interval(unchangedScans: 0, lowPower: false) == 1.5, "Scans every 1.5s while the screen changes")

@@ -183,6 +183,7 @@ public final class BrowserMonitor {
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
               let bundleId = frontApp.bundleIdentifier,
               BrowserLockdown.isMonitored(bundleId) else {
+            frontPageURL = nil
             return
         }
 
@@ -217,6 +218,9 @@ public final class BrowserMonitor {
                 self.scanInFlight = false
                 // Only act if that browser is still the frontmost app.
                 if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+                    // The page in front, for the screen scanner (it leaves everyday sites alone).
+                    let focusedURL = found.first(where: { $0.isFocused })?.url
+                    self.frontPageURL = (focusedURL?.isEmpty ?? true) ? nil : focusedURL
                     self.evaluate(found, pid: pid, bundleId: bundleId)
                     self.scheduleContentScan(found, pid: pid, bundleId: bundleId)
                 }
@@ -243,6 +247,10 @@ public final class BrowserMonitor {
         let window: AXUIElement
         let title: String?   // tab title at detection time (window title == active tab title)
     }
+
+    /// The address of the page in front in the frontmost browser, nil when a browser isn't in front or its
+    /// address can't be read. Main thread only. The screen scanner uses it to skip everyday sites.
+    public private(set) var frontPageURL: String?
 
     /// True while a "Leave Tab" close is in progress. Detection is paused so the page that is
     /// about to be closed can't trigger a second pop-up.
@@ -353,7 +361,8 @@ public final class BrowserMonitor {
     private func scheduleContentScan(_ found: [ScanHit], pid: pid_t, bundleId: String) {
         guard isMonitoring, WordStore.shared.isEnabled, !contentScanInFlight, !isLeaving,
               let hit = found.first(where: { $0.isFocused && !$0.url.isEmpty }),
-              AdultSiteMatcher.host(from: hit.url) != nil else { return }   // real web pages only
+              AdultSiteMatcher.host(from: hit.url) != nil,                  // real web pages only
+              !TrustedSites.isTrusted(urlOrHost: hit.url) else { return }   // never judge YouTube, Wikipedia, shops, news…
 
         let now = Date()
         guard hit.url != lastContentScanURL || now.timeIntervalSince(lastContentScanTime) > 4 else { return }

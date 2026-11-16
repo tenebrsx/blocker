@@ -191,6 +191,17 @@ public final class ScreenImageScanner {
             return false
         }
 
+        // Everyday sites (YouTube, Wikipedia, shops, news…) are never judged by the image model: it
+        // misreads video frames and product photos, and the user only wants adult sites blocked.
+        if let id = frontmost, BrowserLockdown.isMonitored(id) {
+            let page = await MainActor.run { BrowserMonitor.shared.frontPageURL }
+            if let page = page, TrustedSites.isTrusted(urlOrHost: page) {
+                suspectPending = false
+                setStatus(.paused)
+                return false
+            }
+        }
+
         setStatus(.watching)
         return true
     }

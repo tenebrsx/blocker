@@ -5,11 +5,13 @@ public enum ImageScanLogic {
 
     // MARK: - Thresholds
 
-    /// A region this likely to be explicit is acted on immediately.
-    public static let hitScore = 0.90
+    /// A region this likely to be explicit is acted on immediately. Very high on purpose: a wrongly blacked
+    /// out page costs more than a late catch, and image models are over-eager on skin tones, beach and
+    /// gym photos, and film stills.
+    public static let hitScore = 0.99
 
     /// A region this likely to be explicit is checked again on the next scan; two in a row is acted on.
-    public static let suspectScore = 0.70
+    public static let suspectScore = 0.93
 
     /// How much the screen must change (mean brightness difference of a tiny thumbnail, 0...1) before the
     /// model is run again. About 1.5% is a few brightness levels on average: a new picture or a scroll
@@ -87,8 +89,11 @@ public enum ImageScanLogic {
 
     // MARK: - Apps that are never scanned
 
-    /// Terminals and code editors show a lot of changing text and no pictures worth the battery.
+    /// Terminals and code editors show a lot of changing text and no pictures worth the battery. Video and
+    /// music players show film and TV frames, which image models often mistake for explicit pictures.
     public static let ignoredBundleIdentifiers: Set<String> = [
-        "com.apple.Terminal", "com.googlecode.iterm2", "com.apple.dt.Xcode", "com.microsoft.VSCode"
+        "com.apple.Terminal", "com.googlecode.iterm2", "com.apple.dt.Xcode", "com.microsoft.VSCode",
+        "com.apple.QuickTimePlayerX", "com.apple.TV", "com.apple.Music", "org.videolan.vlc",
+        "com.colliderli.iina", "com.spotify.client"
     ]
 }

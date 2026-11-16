@@ -185,9 +185,29 @@ public final class MenuBarController {
                     reason: "Solve \(MathChallenge.strictProblemCount) problems in a row to quit Word Blocker. Protection stops when it quits.",
                     problemCount: MathChallenge.strictProblemCount
                 ) { passed in
-                    guard passed else { return }
-                    self?.isTerminatingConfirmed = true
-                    NSApp.terminate(nil)
+                    guard passed, let self = self else { return }
+
+                    // With unkillable mode on, the root watchdog would just reopen the app: stopping it
+                    // takes the Mac's administrator password too.
+                    guard Watchdog.isInstalled else {
+                        self.isTerminatingConfirmed = true
+                        NSApp.terminate(nil)
+                        return
+                    }
+                    DispatchQueue.global().async {
+                        let stopped = Watchdog.stopForQuit()
+                        DispatchQueue.main.async {
+                            guard stopped else {
+                                let alert = NSAlert()
+                                alert.messageText = "Word Blocker is still running"
+                                alert.informativeText = "Unkillable mode needs your Mac's administrator password to quit, and it wasn't entered."
+                                alert.runModal()
+                                return
+                            }
+                            self.isTerminatingConfirmed = true
+                            NSApp.terminate(nil)
+                        }
+                    }
                 }
             }
         )

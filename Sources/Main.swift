@@ -8,6 +8,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains(Guardian.argument) {
             Guardian.runGuardian()
         }
+        // Unkillable mode's root helper: `WordBlockerWatchdog --watchdog <app path> <user id>`.
+        let arguments = CommandLine.arguments
+        if let flag = arguments.firstIndex(of: Watchdog.argument), arguments.count > flag + 2,
+           let uid = UInt32(arguments[flag + 2]) {
+            Watchdog.runWatchdog(appPath: arguments[flag + 1], uid: uid)
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -121,8 +127,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsWindowController.shared.updatePermissionStatus()
     }
 
+    /// True when this quit request is macOS ending the session (log out, restart, shut down). The quit gate
+    /// is for quitting Word Blocker, never for macOS, so it must not hold those up.
+    private func systemIsEndingSession() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              let reason = event.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) else { return false }
+        let code = reason.enumCodeValue
+        return code == OSType(kAEReallyLogOut) || code == OSType(kAEShutDown) || code == OSType(kAERestart)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if MenuBarController.shared.isTerminatingConfirmed {
+        if MenuBarController.shared.isTerminatingConfirmed || systemIsEndingSession() {
             return .terminateNow
         }
         MenuBarController.shared.confirmAndQuit()
