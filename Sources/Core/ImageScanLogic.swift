@@ -103,6 +103,23 @@ public enum ImageScanLogic {
         return Double(width * height) / Double(area)
     }
 
+    /// The tiles finer than `tiles[index]` that lie mostly inside it: at most about half its area, with a quarter or
+    /// more of themselves inside it.
+    static func finerTileIndices(of index: Int, in tiles: [Tile]) -> [Int] {
+        let tile = tiles[index]
+        let tileArea = tile.width * tile.height
+        return tiles.indices.filter { other in
+            tiles[other].width * tiles[other].height * 2 < tileArea && overlap(of: tiles[other], inside: tile) >= 0.25
+        }
+    }
+
+    /// The finer tile inside `tiles[index]` with the highest score, or nil when nothing finer lies inside it (a 3x3 tile).
+    public static func strongestFinerTile(forTile index: Int, scores: [Double], tiles: [Tile]) -> (index: Int, score: Double)? {
+        guard scores.count == tiles.count, index >= 0, index < tiles.count else { return nil }
+        guard let best = finerTileIndices(of: index, in: tiles).max(by: { scores[$0] < scores[$1] }) else { return nil }
+        return (best, scores[best])
+    }
+
     /// The scores with every uncorroborated coarse hit set to 0. A tile is only questioned when it scores high
     /// enough to matter (at the lowest bar, `suspectScore`) and has finer tiles inside it; the finest tiles
     /// (the 3x3 grid) have nothing finer to be checked against, so a small picture caught only at that scale
@@ -110,12 +127,8 @@ public enum ImageScanLogic {
     public static func supportedScores(_ scores: [Double], tiles: [Tile]) -> [Double] {
         guard scores.count == tiles.count else { return scores }
         var result = scores
-        for (index, tile) in tiles.enumerated() where scores[index] >= suspectScore {
-            let tileArea = tile.width * tile.height
-            // Finer tiles: at most about half the area, with a quarter or more of themselves inside this tile.
-            let finer = tiles.indices.filter { other in
-                tiles[other].width * tiles[other].height * 2 < tileArea && overlap(of: tiles[other], inside: tile) >= 0.25
-            }
+        for index in tiles.indices where scores[index] >= suspectScore {
+            let finer = finerTileIndices(of: index, in: tiles)
             guard !finer.isEmpty else { continue }
             if !finer.contains(where: { scores[$0] >= corroborationFloor }) { result[index] = 0 }
         }

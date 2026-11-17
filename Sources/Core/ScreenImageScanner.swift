@@ -189,11 +189,15 @@ public final class ScreenImageScanner {
                 let context = await frontContext()
                 suspectPending = false
                 lastThumbnails.removeAll()
-                // Closing comes first; working out and writing down why takes a moment longer.
-                await respond()
-                await recordImageEvent(outcome: .blocked, scores: scores, decided: supported, strict: strict,
-                                       context: context, looksLike: describePicture(image, scores: supported),
-                                       bodyParts: await findBodyParts(image, scores: supported))
+                // Closing comes first; working out and writing down why takes a moment longer. The cover says
+                // what is already known at once, and the full reason when it is ready.
+                let top = supported.max() ?? 0
+                let region = ImageScanLogic.regionName(ofTile: supported.firstIndex(of: top) ?? 0, count: supported.count)
+                await respond(detail: "The image model scored the \(region) \(ImageScanLogic.percent(top)) explicit.\n\nChecking the details...")
+                let event = await recordImageEvent(outcome: .blocked, scores: scores, decided: supported, strict: strict,
+                                                   context: context, looksLike: describePicture(image, scores: supported),
+                                                   bodyParts: await findBodyParts(image, scores: supported))
+                await MainActor.run { ScreenCover.update(detail: event.coverText) }
                 return
             }
         }
@@ -366,10 +370,11 @@ public final class ScreenImageScanner {
 
     /// Records a block, or a high score that was not acted on, in the block log with its full explanation.
     /// `decided` are the scores the verdict used (a coarse hit the finer tiles did not back up is zeroed there).
+    @discardableResult
     private func recordImageEvent(outcome: BlockEvent.Outcome, nearMiss: ImageScanLogic.NearMiss? = nil,
                                   scores: [Double], decided: [Double], strict: Bool,
                                   context: (page: String?, app: String)? = nil, looksLike: String = "",
-                                  bodyParts: [BodyPartLogic.Detection]? = nil) async {
+                                  bodyParts: [BodyPartLogic.Detection]? = nil) async -> BlockEvent {
         let front: (page: String?, app: String)
         if let context = context { front = context } else { front = await frontContext() }
         let action: String
@@ -380,10 +385,12 @@ public final class ScreenImageScanner {
         } else {
             action = "App hidden"
         }
-        BlockLog.record(BlockEvent.image(
+        let event = BlockEvent.image(
             outcome: outcome, nearMiss: nearMiss, scores: scores, decided: decided, strict: strict, looksLike: looksLike,
             bodyParts: bodyParts, action: action, page: front.page.map { BlockLog.describePage($0) }, app: front.app
-        ))
+        )
+        BlockLog.record(event)
+        return event
     }
 
     /// The part of the screen that scored highest, cut out of the screenshot.
@@ -422,9 +429,9 @@ public final class ScreenImageScanner {
 
     /// Covers every screen at once, then deals with what was showing: a browser loses its active tab,
     /// any other app is hidden.
-    private func respond() async {
+    private func respond(detail: String) async {
         await MainActor.run {
-            ScreenCover.show(message: "Explicit image detected and closed.")
+            ScreenCover.show(message: "Explicit image detected and closed.", detail: detail)
 
             let front = NSWorkspace.shared.frontmostApplication
             if BrowserLockdown.isMonitored(front?.bundleIdentifier) {
@@ -439,9 +446,13 @@ public final class ScreenImageScanner {
 /// A black full-screen cover shown for a couple of seconds on every display.
 enum ScreenCover {
     private static var windows: [NSWindow] = []
+    private static var detailLabels: [NSTextField] = []
+    private static var hideToken = 0
 
+    /// A black cover on every screen: a headline and, under it, the reason (which can be updated once the full
+    /// reason is known). It stays long enough to read.
     @MainActor
-    static func show(message: String) {
+    static func show(message: String, detail: String = "") {
         hide()
         for screen in NSScreen.screens {
             let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
@@ -457,18 +468,56 @@ enum ScreenCover {
             label.textColor = .white
             label.alignment = .center
             label.sizeToFit()
-            label.frame.origin = NSPoint(x: (screen.frame.width - label.frame.width) / 2, y: screen.frame.height / 2)
+            label.frame.origin = NSPoint(x: (screen.frame.width - label.frame.width) / 2, y: screen.frame.height / 2 + 10)
             window.contentView?.addSubview(label)
+
+            let detailLabel = NSTextField(wrappingLabelWithString: detail)
+            detailLabel.font = .systemFont(ofSize: 15)
+            detailLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+            detailLabel.alignment = .center
+            detailLabel.preferredMaxLayoutWidth = min(760, screen.frame.width - 80)
+            window.contentView?.addSubview(detailLabel)
+            detailLabels.append(detailLabel)
+            layout(detailLabel, on: screen)
 
             window.orderFrontRegardless()
             windows.append(window)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { hide() }
+        scheduleHide(after: detail.isEmpty ? 2.5 : 5)
+    }
+
+    /// Replaces the reason under the headline (the cover keeps showing a little longer so it can be read).
+    @MainActor
+    static func update(detail: String) {
+        guard !windows.isEmpty else { return }
+        for (label, screen) in zip(detailLabels, NSScreen.screens) {
+            label.stringValue = detail
+            layout(label, on: screen)
+        }
+        scheduleHide(after: 6)
+    }
+
+    @MainActor
+    private static func layout(_ label: NSTextField, on screen: NSScreen) {
+        label.sizeToFit()
+        let width = min(label.frame.width, min(760, screen.frame.width - 80))
+        label.frame.size.width = width
+        label.sizeToFit()
+        label.frame.origin = NSPoint(x: (screen.frame.width - label.frame.width) / 2, y: screen.frame.height / 2 - label.frame.height - 10)
+    }
+
+    @MainActor
+    private static func scheduleHide(after seconds: Double) {
+        hideToken += 1
+        let token = hideToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { if token == hideToken { hide() } }
     }
 
     @MainActor
     static func hide() {
+        hideToken += 1
         for window in windows { window.orderOut(nil) }
         windows.removeAll()
+        detailLabels.removeAll()
     }
 }

@@ -25,6 +25,53 @@ public struct BlockEvent: Codable, Equatable {
         }
     }
 
+    /// One stage of the decision: what it looked at, what it found, and what part it played.
+    public struct Step: Codable, Equatable {
+        public enum Result: String, Codable, Equatable {
+            case decided     // this is what caused the block
+            case supports    // agrees with it
+            case against     // looked and did not agree
+            case clear       // looked and nothing triggered
+            case context     // information only; it neither decides nor vetoes
+            case skipped     // did not run, or was not needed
+
+            public var tag: String {
+                switch self {
+                case .decided: return "DECIDED"
+                case .supports: return "AGREES"
+                case .against: return "DOES NOT AGREE"
+                case .clear: return "NOT TRIGGERED"
+                case .context: return "CONTEXT"
+                case .skipped: return "NOT RUN"
+                }
+            }
+        }
+
+        public var title: String
+        public var result: Result
+        public var detail: String
+
+        public init(_ title: String, _ result: Result, _ detail: String) {
+            self.title = title
+            self.result = result
+            self.detail = detail
+        }
+    }
+
+    /// How well the block is backed up: a second, independent check agreed, only the main check fired, or there
+    /// was no second check to ask.
+    public enum Confidence: String, Codable, Equatable {
+        case corroborated, modelOnly, notCrossChecked
+
+        public var label: String {
+            switch self {
+            case .corroborated: return "Second opinion agrees"
+            case .modelOnly: return "Image model only"
+            case .notCrossChecked: return "No second opinion"
+            }
+        }
+    }
+
     public var id: String
     public var date: Date
     public var kind: Kind
@@ -45,10 +92,39 @@ public struct BlockEvent: Codable, Equatable {
     /// For image events, the model's scores: whole screen, then the 2x2 grid, then the 3x3 grid.
     public var scores: [Double]?
     public var strict: Bool?
+    /// The stages of the decision, in the order they ran (nil for entries recorded before steps existed).
+    public var steps: [Step]?
+    /// A plain summary of what happened and how much to trust it.
+    public var assessment: String?
+    public var confidence: Confidence?
+
+    /// The first sentence of the assessment: short enough for the screen cover and the block note.
+    public var brief: String? {
+        guard let text = assessment, let end = text.range(of: ". ") ?? text.range(of: ".", options: .backwards) else { return assessment }
+        return String(text[text.startIndex..<end.upperBound]).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// What the website block note says: the short reason, and where the rest is.
+    public var noteText: String {
+        (brief ?? headline) + " Details: Show Block Log in the menu bar."
+    }
+
+    /// What the black cover says for a couple of seconds after an image block.
+    public var coverText: String {
+        var text = brief ?? headline
+        switch confidence {
+        case .corroborated?: text += " A second check, the body-part detector, agrees."
+        case .modelOnly?: text += " A second check, the body-part detector, found nothing explicit there."
+        case .notCrossChecked?: text += " No second check was available."
+        case nil: break
+        }
+        return text + "\n\nFull reasons: Show Block Log in the menu bar."
+    }
 
     public init(id: String = UUID().uuidString, date: Date = Date(), kind: Kind, outcome: Outcome = .blocked, check: String,
                 headline: String, why: String, action: String, page: String? = nil, app: String? = nil,
-                details: [Detail] = [], scores: [Double]? = nil, strict: Bool? = nil) {
+                details: [Detail] = [], scores: [Double]? = nil, strict: Bool? = nil,
+                steps: [Step]? = nil, assessment: String? = nil, confidence: Confidence? = nil) {
         self.id = id
         self.date = date
         self.kind = kind
@@ -62,6 +138,9 @@ public struct BlockEvent: Codable, Equatable {
         self.details = details
         self.scores = scores
         self.strict = strict
+        self.steps = steps
+        self.assessment = assessment
+        self.confidence = confidence
     }
 
     // MARK: - Names
@@ -126,7 +205,27 @@ public struct BlockEvent: Codable, Equatable {
 
     // MARK: - Making events
 
-    /// An event for a rule match on an address (adult site, explicit search, adult community, page title).
+    private static let siteChecks = ["adult-site", "adult-search", "adult-community", "adult-title"]
+
+    private static func siteStepTitle(_ check: String) -> String {
+        switch check {
+        case "adult-site": return "Address check (adult site lists and domain rules)"
+        case "adult-search": return "Search check (explicit words and phrases in the search)"
+        case "adult-community": return "Reddit check (adult communities and explicit post titles)"
+        default: return "Page-title check (only when the browser hides the address)"
+        }
+    }
+
+    private static func siteNoMatch(_ check: String) -> String {
+        switch check {
+        case "adult-site": return "The address is not on the built-in or downloaded adult-site lists and has no adult keyword or domain ending."
+        case "adult-search": return "No explicit word, phrase or fragment in the search (or the address has no search)."
+        default: return "Not an adult Reddit community or an explicit post title (or not Reddit)."
+        }
+    }
+
+    /// An event for a rule match on an address (adult site, explicit search, adult community, page title). The
+    /// steps list the checks in the order they run, so it is clear which one matched and what the others said.
     public static func website(check: String, reason: AdultSiteMatcher.MatchReason, page: String?, app: String?, date: Date = Date()) -> BlockEvent {
         var details = [
             Detail("Check", checkName(check)),
@@ -136,8 +235,28 @@ public struct BlockEvent: Codable, Equatable {
         if check == "adult-search" {
             details.append(Detail("Search words", "Not saved. Only the rule that matched is kept."))
         }
+
+        let position = siteChecks.firstIndex(of: check) ?? 0
+        var steps: [Step] = []
+        for (index, name) in siteChecks.enumerated() {
+            let title = siteStepTitle(name)
+            if name == check {
+                steps.append(Step(title, .decided, reason.detail + " Rule: \(ruleName(reason.rule)); entry that matched: \(reason.matched)."))
+            } else if name == "adult-title" {
+                steps.append(Step(title, .skipped, "Not used: the browser showed the page address."))
+            } else if check == "adult-title" {
+                steps.append(Step(title, .skipped, "Not possible: the browser did not show the page address."))
+            } else if index < position {
+                steps.append(Step(title, .clear, siteNoMatch(name)))
+            } else {
+                steps.append(Step(title, .skipped, "Not needed: an earlier check already matched."))
+            }
+        }
+
+        var assessment = "Closed by a built-in rule: \(ruleName(reason.rule)). Built-in adult rules are a hard block with no unlock or allow list."
+        if check == "adult-search" { assessment += " Only the rule that matched is kept, not the words that were searched." }
         return BlockEvent(date: date, kind: .website, check: check, headline: headline(forCheck: check), why: reason.detail,
-                          action: "Tab closed", page: page, app: app, details: details)
+                          action: "Tab closed", page: page, app: app, details: details, steps: steps, assessment: assessment)
     }
 
     /// An event for the page-text safety net.
@@ -152,13 +271,22 @@ public struct BlockEvent: Codable, Equatable {
             Detail("Different terms", "\(distinct) (needs \(AdultContentScorer.minimumDistinctTerms) or more)"),
             Detail("Main terms", terms.isEmpty ? "none recorded" : terms.joined(separator: ", "))
         ]
+        let steps = [
+            Step("Address and search checks", .clear, "The address and search passed the adult-site, explicit-search and Reddit rules."),
+            Step("Everyday-site exemption", .clear, "Not exempt: this site is not one of the everyday sites (video, reference, shops, news, social feeds) that are never judged by their text."),
+            Step("Page-text scorer", .decided, "The visible text scored \(score) against a limit of \(AdultContentScorer.threshold), from \(distinct) different explicit terms (it needs \(AdultContentScorer.minimumDistinctTerms)). "
+                + (led.isEmpty ? "" : "Main terms: \(led). ") + "It reads only the words on the page, and is deliberately hard to trip.")
+        ]
+        let assessment = "Closed by the page-text safety net: the visible text scored \(score) (limit \(AdultContentScorer.threshold)) from \(distinct) different explicit terms. "
+            + "This catches adult pages that no list knows, so it judges words only; it did not see the pictures."
         return BlockEvent(date: date, kind: .website, check: "page-text", headline: headline(forCheck: "page-text"), why: why,
-                          action: "Tab closed", page: page, app: app, details: details)
+                          action: "Tab closed", page: page, app: app, details: details, steps: steps, assessment: assessment)
     }
 
     /// An event for the screen image scanner. `scores` are the raw scores, `decided` the ones the verdict used
     /// (a coarse hit the finer tiles did not back up is zeroed there), `looksLike` the labels from the general
-    /// picture classifier for the flagged part of the screen (may be empty).
+    /// picture classifier for the flagged part of the screen (may be empty), `bodyParts` what the body-part
+    /// detector found there (nil when its model is not installed).
     public static func image(outcome: Outcome, nearMiss: ImageScanLogic.NearMiss? = nil, scores: [Double], decided: [Double],
                              strict: Bool, looksLike: String, bodyParts: [BodyPartLogic.Detection]? = nil,
                              action: String, page: String?, app: String?, date: Date = Date()) -> BlockEvent {
@@ -167,13 +295,13 @@ public struct BlockEvent: Codable, Equatable {
         let top = basis.max() ?? 0
         let index = basis.firstIndex(of: top) ?? 0
         let region = ImageScanLogic.regionName(ofTile: index, count: basis.count)
+        let kind = nearMiss ?? .belowBar
         let check: String
-        let why: String
+        var why: String
         if outcome == .blocked {
             check = "image-scan"
             why = ImageScanLogic.explanation(scores: decided, strict: strict, raw: scores) + "."
         } else {
-            let kind = nearMiss ?? .belowBar
             switch kind {
             case .recheck: check = "image-recheck"
             case .belowBar: check = "image-near-miss"
@@ -184,21 +312,25 @@ public struct BlockEvent: Codable, Equatable {
 
         // What the body-part detector found in the flagged area (nil: it is not installed, so nothing is said).
         let parts = bodyParts.map { BodyPartLogic.summarise($0) }
-        let whyWithParts = parts.map { why + " " + BodyPartLogic.sentence($0) } ?? why
+        // Explicit findings belong in the reason; "found nothing explicit" is explained in the steps and assessment.
+        if let parts = parts, !parts.explicit.isEmpty { why += " " + BodyPartLogic.sentence(parts) }
+
+        let percent = ImageScanLogic.percent
+        let hit = strict ? ImageScanLogic.searchHitScore : ImageScanLogic.hitScore
+        let suspect = strict ? ImageScanLogic.searchSuspectScore : ImageScanLogic.suspectScore
+        let bars = "\(percent(hit)) to act on one scan, \(percent(suspect)) on two in a row" + (strict ? " (stricter because this is a search-results page)" : "")
 
         var details = [
             Detail("Check", checkName(check)),
             Detail("Flagged area", region),
-            Detail("Model score", ImageScanLogic.percent(top) + " explicit")
+            Detail("Model score", percent(top) + " explicit")
         ]
-        let hit = strict ? ImageScanLogic.searchHitScore : ImageScanLogic.hitScore
-        let suspect = strict ? ImageScanLogic.searchSuspectScore : ImageScanLogic.suspectScore
         if outcome == .blocked {
             details.append(Detail("Bar cleared", top >= hit
-                ? "\(ImageScanLogic.percent(hit)) (acts on one scan)"
-                : "\(ImageScanLogic.percent(suspect)) on two scans in a row"))
+                ? "\(percent(hit)) (acts on one scan)"
+                : "\(percent(suspect)) on two scans in a row"))
         } else {
-            details.append(Detail("Bar to act", "\(ImageScanLogic.percent(suspect)) on two scans, \(ImageScanLogic.percent(hit)) on one"))
+            details.append(Detail("Bar to act", "\(percent(suspect)) on two scans, \(percent(hit)) on one"))
         }
         if strict { details.append(Detail("Page type", "Search results, so the stricter bars apply")) }
 
@@ -206,13 +338,15 @@ public struct BlockEvent: Codable, Equatable {
             .filter { $0 != index && basis[$0] >= ImageScanLogic.noteScore }
             .sorted { basis[$0] > basis[$1] }
             .prefix(4)
-            .map { "\(ImageScanLogic.regionName(ofTile: $0, count: basis.count)) \(ImageScanLogic.percent(basis[$0]))" }
-        details.append(Detail("Also high", others.isEmpty ? "Nothing else above \(ImageScanLogic.percent(ImageScanLogic.noteScore))" : others.joined(separator: ", ")))
+            .map { "\(ImageScanLogic.regionName(ofTile: $0, count: basis.count)) \(percent(basis[$0]))" }
+        details.append(Detail("Also high", others.isEmpty ? "Nothing else above \(percent(ImageScanLogic.noteScore))" : others.joined(separator: ", ")))
 
-        if raw(scores, differsFrom: decided) {
-            let aside = scores.indices.filter { scores[$0] != decided[$0] }
-                .map { "\(ImageScanLogic.regionName(ofTile: $0, count: scores.count)) \(ImageScanLogic.percent(scores[$0]))" }
-            details.append(Detail("Set aside", aside.joined(separator: ", ") + " (the finer tiles inside did not agree)"))
+        let setAside = raw(scores, differsFrom: decided)
+            ? scores.indices.filter { scores[$0] != decided[$0] }
+                .map { "\(ImageScanLogic.regionName(ofTile: $0, count: scores.count)) \(percent(scores[$0]))" }
+            : []
+        if !setAside.isEmpty {
+            details.append(Detail("Set aside", setAside.joined(separator: ", ") + " (the finer tiles inside did not agree)"))
         }
         if let parts = parts {
             details.append(Detail("Body parts found", parts.explicit.isEmpty ? "None explicit" : parts.explicit.joined(separator: ", ")))
@@ -222,8 +356,95 @@ public struct BlockEvent: Codable, Equatable {
             details.append(Detail("Apple classifier says", looksLike + " (a general picture classifier, not the explicit-content model)"))
         }
 
-        return BlockEvent(date: date, kind: .image, outcome: outcome, check: check, headline: headline(forCheck: check), why: whyWithParts,
-                          action: action, page: page, app: app, details: details, scores: scores, strict: strict)
+        // The decision, stage by stage.
+        var steps: [Step] = []
+        switch (outcome, kind) {
+        case (.blocked, _):
+            steps.append(Step("Image model (this decided the block)", .decided,
+                "The \(region) scored \(percent(top)) explicit. Bars: \(bars). "
+                + (top >= hit ? "It cleared the one-scan bar, so the tab was closed at once." : "It cleared the repeat bar on two scans in a row, so the tab was closed.")))
+        case (_, .recheck):
+            steps.append(Step("Image model", .context, "The \(region) scored \(percent(top)) explicit, above the repeat bar. The tab closes only if the next scan scores that high again."))
+        case (_, .heldBack):
+            steps.append(Step("Image model", .context, "The \(region) scored \(percent(top)) explicit, which would have been enough on its own. See the finer-tile check."))
+        case (_, .belowBar):
+            steps.append(Step("Image model", .clear, "The \(region) scored \(percent(top)) explicit. Bars: \(bars). Under both, so nothing was closed."))
+        }
+
+        let tiles = ImageScanLogic.tiles(width: 1280, height: 800)
+        if basis.count == tiles.count, outcome == .blocked || kind != .belowBar {
+            let floor = percent(ImageScanLogic.corroborationFloor)
+            if let backing = ImageScanLogic.strongestFinerTile(forTile: index, scores: scores, tiles: tiles) {
+                let tile = ImageScanLogic.regionName(ofTile: backing.index, count: tiles.count)
+                if backing.score >= ImageScanLogic.corroborationFloor {
+                    steps.append(Step("Finer-tile check", .supports,
+                        "Backed up: the \(tile) inside it scored \(percent(backing.score)). A whole-screen or quarter hit needs a finer tile inside it at \(floor) or more."
+                        + (setAside.isEmpty ? "" : " Set aside for lack of that: \(setAside.joined(separator: ", ")).")))
+                } else {
+                    steps.append(Step("Finer-tile check", .against,
+                        "No finer tile inside the \(region) reached \(floor) (best: the \(tile) at \(percent(backing.score))), so that hit was set aside as the model misreading a busy screen."))
+                }
+            } else {
+                steps.append(Step("Finer-tile check", .context,
+                    "Not needed: the flagged area is already one of the smallest tiles (a ninth of the screen), so there is nothing finer to check it against."
+                    + (setAside.isEmpty ? "" : " Set aside elsewhere: \(setAside.joined(separator: ", ")).")))
+            }
+        }
+
+        if let parts = parts {
+            let seen = parts.context.isEmpty ? "" : " It saw only: " + parts.context.joined(separator: ", ") + "."
+            if !parts.explicit.isEmpty {
+                steps.append(Step("Body-part detector (second opinion, never decides)", .supports,
+                    "It found explicit body parts in that area: \(parts.explicit.joined(separator: ", ")).\(parts.context.isEmpty ? "" : " Also seen: " + parts.context.joined(separator: ", ") + ".")"))
+            } else {
+                steps.append(Step("Body-part detector (second opinion, never decides)", .against,
+                    "It found no explicit body part in that area." + (parts.context.isEmpty ? " It found nothing at all." : seen)
+                    + " It is trained on photos, so drawn, stylised or unusual pictures, and small or partly hidden parts, are often missed. What it sees besides explicit parts (a face, say) is not a reason for a block."))
+            }
+        } else {
+            steps.append(Step("Body-part detector (second opinion, never decides)", .skipped, "Not run: its model is not installed (see the README)."))
+        }
+
+        if looksLike.isEmpty {
+            steps.append(Step("Apple picture classifier (context only)", .skipped, "No labels were recorded."))
+        } else {
+            let lowered = looksLike.lowercased()
+            let page = lowered.contains("screenshot") || lowered.contains("document")
+                ? " Labels like screenshot or document mean the area looks like a page or window rather than a single photo."
+                : ""
+            steps.append(Step("Apple picture classifier (context only)", .context,
+                "It describes the area as: \(looksLike). It has no nudity labels, so it can neither confirm nor rule out explicit content.\(page)"))
+        }
+
+        // What it adds up to.
+        var assessment: String
+        var confidence: Confidence?
+        if outcome == .blocked {
+            let head = "Closed on the image model's score alone: the \(region) scored \(percent(top)) explicit."
+            if let parts = parts {
+                if parts.explicit.isEmpty {
+                    let seen = parts.context.isEmpty ? "" : " (it saw only " + parts.context.joined(separator: ", ") + ", which is not a reason for the block)"
+                    assessment = head + " The body-part detector found no explicit body part there\(seen), so the second opinion did not agree: a weaker block."
+                    confidence = .modelOnly
+                } else {
+                    assessment = "Closed: the image model scored the \(region) \(percent(top)) explicit, and the body-part detector independently found \(parts.explicit[0])."
+                    confidence = .corroborated
+                }
+            } else {
+                assessment = head + " The body-part detector is not installed, so there was no second opinion."
+                confidence = .notCrossChecked
+            }
+        } else {
+            switch kind {
+            case .recheck: assessment = "Not closed yet: the \(region) scored \(percent(top)) explicit, above the repeat bar. It closes only if the next scan scores that high again."
+            case .belowBar: assessment = "Nothing closed: the \(region) scored \(percent(top)) explicit, under the \(percent(suspect)) bar."
+            case .heldBack: assessment = "Nothing closed: a high score in the \(region) was set aside because no finer tile inside it agreed."
+            }
+        }
+
+        return BlockEvent(date: date, kind: .image, outcome: outcome, check: check, headline: headline(forCheck: check), why: why,
+                          action: action, page: page, app: app, details: details, scores: scores, strict: strict,
+                          steps: steps, assessment: assessment, confidence: confidence)
     }
 
     private static func raw(_ scores: [Double], differsFrom decided: [Double]) -> Bool {
@@ -298,6 +519,11 @@ public struct BlockEvent: Codable, Equatable {
     /// The event as a single line for `blocks.log`.
     public var logLine: String {
         var parts = ["\(headline)", "check=\(check)", "why=\"\(why)\""]
+        if let assessment = assessment { parts.append("in-short=\"\(assessment)\"") }
+        if let confidence = confidence { parts.append("confidence=\(confidence.rawValue)") }
+        if let steps = steps {
+            parts.append("steps=[" + steps.map { "\($0.result.tag): \($0.title)" }.joined(separator: "; ") + "]")
+        }
         for detail in details where detail.label != "Check" { parts.append("\(detail.label)=\(detail.value)") }
         if let scores = scores {
             parts.append("scores(whole | 2x2 | 3x3)=[" + scores.map { String(format: "%.3f", $0) }.joined(separator: " ") + "]")
@@ -316,7 +542,19 @@ public struct BlockEvent: Codable, Equatable {
         var lines = [headline, formatter.string(from: date) + "  ·  " + action + "  ·  " + BlockEvent.appName(app)]
         if let page = page { lines.append("Page: " + page) }
         lines.append("")
+        if let assessment = assessment {
+            lines.append("In short: " + assessment + (confidence.map { " [" + $0.label + "]" } ?? ""))
+            lines.append("")
+        }
         lines.append("Why: " + why)
+        if let steps = steps, !steps.isEmpty {
+            lines.append("")
+            lines.append("How the decision was made:")
+            for (index, step) in steps.enumerated() {
+                lines.append("  \(index + 1). [\(step.result.tag)] \(step.title)")
+                lines.append("     \(step.detail)")
+            }
+        }
         lines.append("")
         for detail in details { lines.append("\(detail.label): \(detail.value)") }
         if let scores = scores {

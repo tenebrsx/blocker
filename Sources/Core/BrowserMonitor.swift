@@ -358,22 +358,25 @@ public final class BrowserMonitor {
                                  window: hit.window, title: hit.title)
 
         // Which check fired, and which rule inside it, for the block log.
+        var event: BlockEvent?
         if hit.url.isEmpty {
             if let reason = AdultSiteMatcher.adultTitleReason(hit.title ?? "") {
-                BlockLog.record(BlockEvent.website(check: "adult-title", reason: reason, page: nil, app: bundleId))
+                event = BlockEvent.website(check: "adult-title", reason: reason, page: nil, app: bundleId)
             }
         } else {
             let page = BlockLog.describePage(hit.url)
             if let reason = AdultSiteMatcher.adultSiteReason(urlOrHost: hit.url) {
-                BlockLog.record(BlockEvent.website(check: "adult-site", reason: reason, page: page, app: bundleId))
+                event = BlockEvent.website(check: "adult-site", reason: reason, page: page, app: bundleId)
             } else if let reason = AdultSiteMatcher.adultSearchReason(urlOrHost: hit.url) {
-                BlockLog.record(BlockEvent.website(check: "adult-search", reason: reason, page: page, app: bundleId))
+                event = BlockEvent.website(check: "adult-search", reason: reason, page: page, app: bundleId)
             } else if let reason = AdultSiteMatcher.adultCommunityReason(urlOrHost: hit.url) {
-                BlockLog.record(BlockEvent.website(check: "adult-community", reason: reason, page: page, app: bundleId))
+                event = BlockEvent.website(check: "adult-community", reason: reason, page: page, app: bundleId)
             }
         }
+        if let event = event { BlockLog.record(event) }
 
-        showAdultNote()
+        // The note says which rule closed it, and where the full reasons are.
+        showAdultNote(event?.noteText ?? "This website is permanently blocked. There is no way through.")
 
         // Matching tabs by address is only safe for a non-empty key that can sit inside an AppleScript string.
         if !domain.isEmpty, !domain.contains("\""), !domain.contains("\\") {
@@ -423,23 +426,26 @@ public final class BrowserMonitor {
                 self.contentScanInFlight = false
                 guard flagged,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                var note: String?
                 if let analysis = analysis {
-                    BlockLog.record(BlockEvent.pageText(score: analysis.score, distinct: analysis.distinct, terms: analysis.terms,
-                                                        page: BlockLog.describePage(hit.url), app: bundleId))
+                    let event = BlockEvent.pageText(score: analysis.score, distinct: analysis.distinct, terms: analysis.terms,
+                                                    page: BlockLog.describePage(hit.url), app: bundleId)
+                    BlockLog.record(event)
+                    note = event.noteText
                 }
-                self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId)
+                self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId, note: note)
             }
         }
     }
 
     /// Closes the tab only if the window is still showing the page that was scanned.
-    private func closeFlaggedPage(_ hit: ScanHit, pid: pid_t, bundleId: String) {
+    private func closeFlaggedPage(_ hit: ScanHit, pid: pid_t, bundleId: String, note: String? = nil) {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let current = self.extractURL(from: hit.window, appRef: AXUIElementCreateApplication(pid))
             DispatchQueue.main.async {
                 guard current == hit.url else { return }   // navigated away while it was being scanned
-                self.showAdultNote()
+                if let note = note { self.showAdultNote(note) } else { self.showAdultNote() }
                 self.closeFrontTab(hit, bundleId: bundleId)
             }
         }

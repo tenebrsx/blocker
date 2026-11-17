@@ -808,8 +808,64 @@ struct TestRunner {
         assertTest(withParts.why.contains("The body-part detector found: female breast (exposed) 87.0% x2") && withParts.details.contains(BlockEvent.Detail("Body parts found", "female breast (exposed) 87.0% x2, buttocks (exposed) 72.0%"))
                    && withParts.details.contains(BlockEvent.Detail("Also seen", "face (male) 90.0%, belly (exposed) 61.0%")), "A block with detector findings says them in the reason and the evidence")
         let noParts = BlockEvent.image(outcome: .blocked, scores: realFeedPicture, decided: realFeedPicture, strict: false, looksLike: "", bodyParts: [], action: "Tab closed", page: "x.com/a", app: nil, date: stamp)
-        assertTest(noParts.details.contains(BlockEvent.Detail("Body parts found", "None explicit")) && noParts.details.contains(BlockEvent.Detail("Also seen", "Nothing else")) && noParts.why.contains("found no body parts"), "A detector run that found nothing says so")
+        assertTest(noParts.details.contains(BlockEvent.Detail("Body parts found", "None explicit")) && noParts.details.contains(BlockEvent.Detail("Also seen", "Nothing else"))
+                   && noParts.steps?.contains { $0.title.hasPrefix("Body-part detector") && $0.result == .against && $0.detail.contains("found nothing at all") } == true, "A detector run that found nothing says so")
         assertTest(!imageEvent.details.contains { $0.label == "Body parts found" } && !imageEvent.why.contains("body-part detector"), "Without the detector's model, the log says nothing about body parts")
+
+        // The decision trace: which stage decided, which agreed, and how far to trust the block.
+        let reportedCase = [0.74, 0.05, 0.02, 0.996, 0.739, 0.01, 0.0, 0.0, 0.23, 0.03, 0.02, 0.001, 0.108, 0.09]
+        let face = [BodyPartLogic.Detection(label: 1, score: 0.422, centerX: 0, centerY: 0, width: 1, height: 1)]
+        let screenLabels = "document 80.7%, screenshot 80.7%, art 36.2%, illustrations 36.2%, people 16.2%, adult 16.2%"
+        let modelOnly = BlockEvent.image(outcome: .blocked, scores: reportedCase, decided: reportedCase, strict: false, looksLike: screenLabels, bodyParts: face,
+                                         action: "Tab closed", page: "www.google.com/search", app: "com.google.Chrome", date: stamp)
+        assertTest(modelOnly.confidence == .modelOnly && modelOnly.steps?.map { $0.result } == [.decided, .supports, .against, .context], "A block the detector did not back up has a decided model step, a finer-tile step, a disagreeing detector and context: \(String(describing: modelOnly.steps?.map { $0.result }))")
+        assertTest(modelOnly.assessment?.hasPrefix("Closed on the image model's score alone: the bottom-left quarter of the screen scored 99.6% explicit.") == true
+                   && modelOnly.assessment?.contains("found no explicit body part there (it saw only face (female) 42.2%, which is not a reason for the block)") == true
+                   && modelOnly.assessment?.hasSuffix("so the second opinion did not agree: a weaker block.") == true, "The assessment says it rests on the model alone and that a face is not the reason: \(modelOnly.assessment ?? "")")
+        assertTest(modelOnly.brief == "Closed on the image model's score alone: the bottom-left quarter of the screen scored 99.6% explicit.", "The brief is the first sentence")
+        assertTest(!modelOnly.why.contains("body-part detector") && modelOnly.why.contains("also high: whole screen 74.0%"), "The reason no longer leads with the face: \(modelOnly.why)")
+        assertTest(modelOnly.steps?[1].detail.contains("middle-left ninth of the screen inside it scored 23.0%") == true && modelOnly.steps?[2].detail.contains("not a reason for a block") == true
+                   && modelOnly.steps?[3].detail.contains("page or window") == true && modelOnly.steps?[0].title.contains("decided the block") == true, "Each step says what it found and its role")
+        let backed = BlockEvent.image(outcome: .blocked, scores: reportedCase, decided: reportedCase, strict: false, looksLike: "", bodyParts: found, action: "Tab closed", page: nil, app: nil, date: stamp)
+        assertTest(backed.confidence == .corroborated && backed.assessment?.contains("independently found female breast (exposed) 87.0% x2") == true && backed.steps?[2].result == .supports, "An agreeing detector makes it a corroborated block")
+        let unchecked = BlockEvent.image(outcome: .blocked, scores: reportedCase, decided: reportedCase, strict: false, looksLike: "", bodyParts: nil, action: "Tab closed", page: nil, app: nil, date: stamp)
+        assertTest(unchecked.confidence == .notCrossChecked && unchecked.assessment?.contains("no second opinion") == true && unchecked.steps?[2].result == .skipped && unchecked.steps?[3].result == .skipped, "No detector, no second opinion: said plainly")
+        assertTest(imageEvent.steps?[1].result == .context && imageEvent.steps?[1].detail.contains("smallest tiles") == true, "A hit on a ninth says there is nothing finer to check it against")
+        let heldSteps = nearEvent.steps ?? []
+        assertTest(heldSteps.first { $0.title == "Finer-tile check" }?.result == .against && nearEvent.assessment?.hasPrefix("Nothing closed") == true && nearEvent.confidence == nil, "A held-back near miss shows the failed finer-tile check")
+        assertTest(recheckEvent.steps?.first?.result == .context && recheckEvent.steps?.contains { $0.title == "Finer-tile check" } == true, "A recheck explains it is waiting on the next scan")
+        var lowScores = [Double](repeating: 0.01, count: 14); lowScores[5] = 0.7
+        let belowBarEvent = BlockEvent.image(outcome: .nearMiss, nearMiss: .belowBar, scores: lowScores, decided: lowScores, strict: false, looksLike: "", action: "Nothing closed", page: nil, app: nil, date: stamp)
+        assertTest(belowBarEvent.steps?.first?.result == .clear && belowBarEvent.steps?.contains { $0.title == "Finer-tile check" } == false, "A below-the-bar score is just not triggered")
+        let finerTiles = ImageScanLogic.tiles(width: 1280, height: 800)
+        let backing = ImageScanLogic.strongestFinerTile(forTile: 3, scores: reportedCase, tiles: finerTiles)
+        assertTest(backing?.index == 8 && backing?.score == 0.23 && ImageScanLogic.strongestFinerTile(forTile: 9, scores: reportedCase, tiles: finerTiles) == nil && ImageScanLogic.strongestFinerTile(forTile: 3, scores: [0.1], tiles: finerTiles) == nil, "The strongest finer tile inside a quarter is found; a ninth has none")
+        // Websites: the checks in order, with what each said.
+        func results(_ event: BlockEvent) -> [BlockEvent.Step.Result] { event.steps?.map { $0.result } ?? [] }
+        let siteEvent = BlockEvent.website(check: "adult-site", reason: siteReason!, page: "www.pornhub.com", app: nil, date: stamp)
+        assertTest(results(siteEvent) == [.decided, .skipped, .skipped, .skipped] && siteEvent.assessment?.contains("hard block") == true && siteEvent.confidence == nil, "An adult site: the first check decided, the rest were not needed")
+        assertTest(results(searchEvent) == [.clear, .decided, .skipped, .skipped] && searchEvent.steps?[0].detail.contains("not on the built-in or downloaded") == true && searchEvent.assessment?.contains("not the words that were searched") == true, "An explicit search: the address was clean, the search check decided")
+        let communityEvent = BlockEvent.website(check: "adult-community", reason: community!, page: "www.reddit.com/r/Hentai_Irl", app: nil, date: stamp)
+        assertTest(results(communityEvent) == [.clear, .clear, .decided, .skipped] && communityEvent.steps?[3].detail.contains("showed the page address") == true, "A community block: address and search were clean")
+        let titleEvent = BlockEvent.website(check: "adult-title", reason: AdultSiteMatcher.adultTitleReason("Free XXX videos")!, page: nil, app: nil, date: stamp)
+        assertTest(results(titleEvent) == [.skipped, .skipped, .skipped, .decided] && titleEvent.steps?[0].detail.contains("did not show the page address") == true, "A title block: the address could not be checked")
+        assertTest(results(textEvent) == [.clear, .clear, .decided] && textEvent.steps?[2].detail.contains("against a limit of 18") == true && textEvent.assessment?.contains("did not see the pictures") == true, "Page text: address checks clear, the scorer decided, and it says it never saw the pictures")
+        assertTest(modelOnly.coverText == "Closed on the image model's score alone: the bottom-left quarter of the screen scored 99.6% explicit. A second check, the body-part detector, found nothing explicit there.\n\nFull reasons: Show Block Log in the menu bar.",
+                   "The cover says the reason and that the second check found nothing: \(modelOnly.coverText)")
+        assertTest(backed.coverText.contains("detector, agrees.") && unchecked.coverText.contains("No second check was available.") && searchEvent.coverText.hasSuffix("Show Block Log in the menu bar."), "The cover follows how well the block is backed up")
+        assertTest(searchEvent.noteText == "Closed by a built-in rule: Explicit word-fragment list. Details: Show Block Log in the menu bar." && textEvent.noteText.hasPrefix("Closed by the page-text safety net: the visible text scored 24 (limit 18) from 5 different explicit terms."),
+                   "The website note names the rule and points to the log: \(searchEvent.noteText)")
+        // Text forms and old stored events.
+        assertTest(modelOnly.copyText.contains("In short: Closed on the image model's score alone") && modelOnly.copyText.contains("[Image model only]") && modelOnly.copyText.contains("How the decision was made:")
+                   && modelOnly.copyText.contains("1. [DECIDED] Image model (this decided the block)") && modelOnly.copyText.contains("3. [DOES NOT AGREE] Body-part detector"), "Copied details include the in-short line and the numbered steps")
+        assertTest(modelOnly.logLine.contains("in-short=\"Closed on the image model's score alone") && modelOnly.logLine.contains("confidence=modelOnly") && modelOnly.logLine.contains("steps=[DECIDED: Image model (this decided the block); AGREES: Finer-tile check; DOES NOT AGREE: Body-part detector"), "The text log line carries the assessment and the stage tags")
+        assertTest(Set(["decided", "supports", "against", "clear", "context", "skipped"].compactMap { BlockEvent.Step.Result(rawValue: $0)?.tag }).count == 6, "Every step result has its own tag")
+        let oldJSON = "{\"id\":\"a1\",\"date\":\"2026-11-16T22:37:49Z\",\"kind\":\"website\",\"outcome\":\"blocked\",\"check\":\"adult-site\",\"headline\":\"Adult website closed\",\"why\":\"x\",\"action\":\"Tab closed\",\"details\":[]}"
+        let oldDecoded = BlockLog.events(fromJSONLines: oldJSON)
+        assertTest(oldDecoded.count == 1 && oldDecoded[0].steps == nil && oldDecoded[0].assessment == nil && oldDecoded[0].confidence == nil && oldDecoded[0].brief == nil, "An event stored before steps existed still reads")
+        assertTest(oldDecoded[0].noteText == "Adult website closed Details: Show Block Log in the menu bar.", "An old entry's note falls back to its headline")
+        let rebuilt = BlockEvent.legacy(line: oldImage)
+        assertTest(rebuilt?.steps?.first?.result == .decided && rebuilt?.confidence == .notCrossChecked, "An older image block gets its steps rebuilt from the scores")
 
         // The block log: what is recorded, and that it never keeps the search words.
         let logLine = BlockLog.line(date: Date(timeIntervalSince1970: 0), reason: "image-scanner", detail: "a\nb")

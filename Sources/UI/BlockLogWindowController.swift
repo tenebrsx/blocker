@@ -327,6 +327,18 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         event.outcome == .nearMiss ? .systemOrange : .systemRed
     }
 
+    /// The colour of a decision step's tag: red for what decided, green for what agreed, orange for what did not.
+    static func color(for result: BlockEvent.Step.Result) -> NSColor {
+        switch result {
+        case .decided: return .systemRed
+        case .supports: return .systemGreen
+        case .against: return .systemOrange
+        case .clear: return .secondaryLabelColor
+        case .context: return .systemBlue
+        case .skipped: return .tertiaryLabelColor
+        }
+    }
+
     static func symbol(for check: String) -> NSImage? {
         let name: String
         switch check {
@@ -655,6 +667,10 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
 
         badgeRow.arrangedSubviews.forEach { badgeRow.removeArrangedSubview($0); $0.removeFromSuperview() }
         badgeRow.addArrangedSubview(pill(event.outcome == .blocked ? "Blocked" : "Near miss", color: detailAccent))
+        if let confidence = event.confidence {
+            let color: NSColor = confidence == .corroborated ? .systemGreen : (confidence == .modelOnly ? .systemOrange : .systemGray)
+            badgeRow.addArrangedSubview(pill(confidence.label, color: color))
+        }
         badgeRow.addArrangedSubview(pill(event.action, color: .systemGray))
         badgeRow.addArrangedSubview(pill(BlockEvent.appName(event.app), color: .systemBlue))
         badgeRow.addArrangedSubview(pill(event.kind == .image ? "Image scanner" : "Website check", color: .systemGray))
@@ -700,11 +716,45 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
             ]))
         }
 
-        heading(event.outcome == .blocked ? "Why it was blocked" : "Why it was flagged, and why nothing closed")
         let body = NSMutableParagraphStyle()
         body.lineSpacing = 4
+
+        if let assessment = event.assessment {
+            heading("In short")
+            result.append(NSAttributedString(string: assessment + "\n", attributes: [
+                .font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.labelColor, .paragraphStyle: body
+            ]))
+        }
+
+        if let steps = event.steps, !steps.isEmpty {
+            heading("How the decision was made")
+            let step = NSMutableParagraphStyle()
+            step.paragraphSpacingBefore = 10
+            step.paragraphSpacing = 2
+            let detail = NSMutableParagraphStyle()
+            detail.firstLineHeadIndent = 20
+            detail.headIndent = 20
+            detail.lineSpacing = 3
+            for (index, item) in steps.enumerated() {
+                result.append(NSAttributedString(string: "\(index + 1)   ", attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: step
+                ]))
+                result.append(NSAttributedString(string: item.result.tag, attributes: [
+                    .font: NSFont.systemFont(ofSize: 10.5, weight: .bold), .foregroundColor: BlockLogWindowController.color(for: item.result),
+                    .kern: 0.6, .paragraphStyle: step
+                ]))
+                result.append(NSAttributedString(string: "   " + item.title + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor, .paragraphStyle: step
+                ]))
+                result.append(NSAttributedString(string: item.detail + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: detail
+                ]))
+            }
+        }
+
+        heading(event.outcome == .blocked ? "Technical reason" : "Why it was flagged, and why nothing closed")
         result.append(NSAttributedString(string: event.why + "\n", attributes: [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor, .paragraphStyle: body
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor, .paragraphStyle: body
         ]))
 
         heading("Evidence")
@@ -730,7 +780,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
 
         heading("About this entry")
         let note = event.kind == .image
-            ? "The image model gives one number for each look: how likely that part of the screen is to be explicit. It does not name what it sees. The picture itself is never saved."
+            ? "The image model gives one number for each look: how likely that part of the screen is to be explicit. It does not name what it sees, and this log shows what the models reported, not what was on screen. The picture itself is never saved."
             : "Only the rule that matched is kept. Search words and page text are not saved, and the address is stored without its query string."
         result.append(NSAttributedString(string: note + "\n", attributes: [
             .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: body
