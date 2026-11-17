@@ -61,13 +61,14 @@ public struct BlockEvent: Codable, Equatable {
     /// How well the block is backed up: a second, independent check agreed, only the main check fired, or there
     /// was no second check to ask.
     public enum Confidence: String, Codable, Equatable {
-        case corroborated, modelOnly, notCrossChecked
+        case corroborated, modelOnly, notCrossChecked, learned
 
         public var label: String {
             switch self {
             case .corroborated: return "Second opinion agrees"
             case .modelOnly: return "Image model only"
             case .notCrossChecked: return "No second opinion"
+            case .learned: return "Matches your correction"
             }
         }
     }
@@ -97,6 +98,8 @@ public struct BlockEvent: Codable, Equatable {
     /// A plain summary of what happened and how much to trust it.
     public var assessment: String?
     public var confidence: Confidence?
+    /// True when a fingerprint of the flagged area was kept, so marking this entry can teach the scanner.
+    public var canLearn: Bool?
 
     /// The first sentence of the assessment: short enough for the screen cover and the block note.
     public var brief: String? {
@@ -116,6 +119,7 @@ public struct BlockEvent: Codable, Equatable {
         case .corroborated?: text += " A second check, the body-part detector, agrees."
         case .modelOnly?: text += " A second check, the body-part detector, found nothing explicit there."
         case .notCrossChecked?: text += " No second check was available."
+        case .learned?: break      // the brief already says it matches what you marked
         case nil: break
         }
         return text + "\n\nFull reasons: Show Block Log in the menu bar."
@@ -156,6 +160,8 @@ public struct BlockEvent: Codable, Equatable {
         case "image-recheck": return "Possible image, rechecking"
         case "image-near-miss": return "High score, nothing closed"
         case "image-held-back": return "Score set aside, nothing closed"
+        case "image-not-confirmed": return "Flagged, not confirmed: left open"
+        case "image-learned-hold": return "Held: looks like something you marked not explicit"
         default: return check
         }
     }
@@ -167,7 +173,7 @@ public struct BlockEvent: Codable, Equatable {
         case "adult-community": return "Adult Reddit community rules"
         case "adult-title": return "Page title rules"
         case "page-text": return "Page text scan"
-        case "image-scan", "image-recheck", "image-near-miss", "image-held-back": return "Screen image scanner"
+        case "image-scan", "image-recheck", "image-near-miss", "image-held-back", "image-not-confirmed", "image-learned-hold": return "Screen image scanner"
         default: return check
         }
     }
@@ -289,6 +295,7 @@ public struct BlockEvent: Codable, Equatable {
     /// detector found there (nil when its model is not installed).
     public static func image(outcome: Outcome, nearMiss: ImageScanLogic.NearMiss? = nil, scores: [Double], decided: [Double],
                              strict: Bool, looksLike: String, bodyParts: [BodyPartLogic.Detection]? = nil,
+                             memory: FeedbackLogic.Match? = nil, memoryCount: Int = 0,
                              action: String, page: String?, app: String?, date: Date = Date()) -> BlockEvent {
         // A held-back event is about the score that was set aside, so it reads from the raw scores.
         let basis = nearMiss == .heldBack ? scores : decided
@@ -306,6 +313,8 @@ public struct BlockEvent: Codable, Equatable {
             case .recheck: check = "image-recheck"
             case .belowBar: check = "image-near-miss"
             case .heldBack: check = "image-held-back"
+            case .notConfirmed: check = "image-not-confirmed"
+            case .matchesNotExplicit: check = "image-learned-hold"
             }
             why = ImageScanLogic.nearMissExplanation(scores: decided, strict: strict, kind: kind, raw: scores)
         }
@@ -367,6 +376,9 @@ public struct BlockEvent: Codable, Equatable {
             steps.append(Step("Image model", .context, "The \(region) scored \(percent(top)) explicit, above the repeat bar. The tab closes only if the next scan scores that high again."))
         case (_, .heldBack):
             steps.append(Step("Image model", .context, "The \(region) scored \(percent(top)) explicit, which would have been enough on its own. See the finer-tile check."))
+        case (_, .notConfirmed), (_, .matchesNotExplicit):
+            steps.append(Step("Image model (proposed closing it)", .context,
+                "The \(region) scored \(percent(top)) explicit, enough to close on its own. The model is overconfident, so it needs a second check before anything is closed. Bars: \(bars)."))
         case (_, .belowBar):
             steps.append(Step("Image model", .clear, "The \(region) scored \(percent(top)) explicit. Bars: \(bars). Under both, so nothing was closed."))
         }
@@ -391,18 +403,23 @@ public struct BlockEvent: Codable, Equatable {
             }
         }
 
+        let confirmed = bodyParts.map { BodyPartLogic.confirms($0) }
         if let parts = parts {
             let seen = parts.context.isEmpty ? "" : " It saw only: " + parts.context.joined(separator: ", ") + "."
-            if !parts.explicit.isEmpty {
-                steps.append(Step("Body-part detector (second opinion, never decides)", .supports,
+            if confirmed == true {
+                steps.append(Step("Body-part detector (second opinion)", .supports,
                     "It found explicit body parts in that area: \(parts.explicit.joined(separator: ", ")).\(parts.context.isEmpty ? "" : " Also seen: " + parts.context.joined(separator: ", ") + ".")"))
             } else {
-                steps.append(Step("Body-part detector (second opinion, never decides)", .against,
-                    "It found no explicit body part in that area." + (parts.context.isEmpty ? " It found nothing at all." : seen)
+                // Either nothing explicit, or only a weak sign of it (under the confidence needed to confirm).
+                let weak = parts.explicit.isEmpty ? ""
+                    : " It saw only weak signs of an explicit body part (\(parts.explicit.joined(separator: ", "))); it needs \(percent(Double(BodyPartLogic.confirmationScore))) or more."
+                steps.append(Step("Body-part detector (second opinion)", .against,
+                    "It found no explicit body part in that area it was sure of." + weak + (parts.context.isEmpty ? (parts.explicit.isEmpty ? " It found nothing at all." : "") : seen)
+                    + (kind == .notConfirmed && outcome == .nearMiss ? " That is why nothing was closed." : "")
                     + " It is trained on photos, so drawn, stylised or unusual pictures, and small or partly hidden parts, are often missed. What it sees besides explicit parts (a face, say) is not a reason for a block."))
             }
         } else {
-            steps.append(Step("Body-part detector (second opinion, never decides)", .skipped, "Not run: its model is not installed (see the README)."))
+            steps.append(Step("Body-part detector (second opinion)", .skipped, "Not run: its model is not installed (see the README)."))
         }
 
         if looksLike.isEmpty {
@@ -416,13 +433,38 @@ public struct BlockEvent: Codable, Equatable {
                 "It describes the area as: \(looksLike). It has no nudity labels, so it can neither confirm nor rule out explicit content.\(page)"))
         }
 
+        // What the user has taught it.
+        if let memory = memory {
+            let how = ImageScanLogic.percent(memory.similarity)
+            let said = memory.label == .explicit ? "explicit" : "not explicit"
+            if memory.label == .notExplicit && confirmed == true {
+                steps.append(Step("Your earlier corrections", .against,
+                    "This looks like a picture you marked as \(said) (\(how) alike), but the body-part detector found an explicit body part, and that always wins."))
+            } else if memory.label == .notExplicit {
+                steps.append(Step("Your earlier corrections", .decided,
+                    "This looks like a picture you marked as \(said) (\(how) alike), so it was held, not closed."))
+            } else if confirmed == true {
+                steps.append(Step("Your earlier corrections", .supports,
+                    "This also looks like a picture you marked as \(said) (\(how) alike)."))
+            } else {
+                steps.append(Step("Your earlier corrections", .decided,
+                    "This looks like a picture you marked as \(said) (\(how) alike), so it was closed although the body-part detector did not find an explicit body part."))
+            }
+        } else if memoryCount > 0 {
+            steps.append(Step("Your earlier corrections", .clear,
+                "Nothing you have marked looks close enough to this (it takes \(ImageScanLogic.percent(FeedbackLogic.matchThreshold)) alike). You have marked \(memoryCount) so far."))
+        }
+
         // What it adds up to.
         var assessment: String
         var confidence: Confidence?
-        if outcome == .blocked {
+        if outcome == .blocked, let memory = memory, memory.label == .explicit, confirmed != true {
+            assessment = "Closed because this looks like a picture you marked as explicit (\(percent(memory.similarity)) alike), although the body-part detector did not find an explicit body part there. The image model scored the \(region) \(percent(top)) explicit."
+            confidence = .learned
+        } else if outcome == .blocked {
             let head = "Closed on the image model's score alone: the \(region) scored \(percent(top)) explicit."
             if let parts = parts {
-                if parts.explicit.isEmpty {
+                if confirmed != true {
                     let seen = parts.context.isEmpty ? "" : " (it saw only " + parts.context.joined(separator: ", ") + ", which is not a reason for the block)"
                     assessment = head + " The body-part detector found no explicit body part there\(seen), so the second opinion did not agree: a weaker block."
                     confidence = .modelOnly
@@ -439,6 +481,12 @@ public struct BlockEvent: Codable, Equatable {
             case .recheck: assessment = "Not closed yet: the \(region) scored \(percent(top)) explicit, above the repeat bar. It closes only if the next scan scores that high again."
             case .belowBar: assessment = "Nothing closed: the \(region) scored \(percent(top)) explicit, under the \(percent(suspect)) bar."
             case .heldBack: assessment = "Nothing closed: a high score in the \(region) was set aside because no finer tile inside it agreed."
+            case .matchesNotExplicit:
+                assessment = "Nothing closed: this looks like a picture you marked as not explicit (\(percent(memory?.similarity ?? 0)) alike), although the image model scored the \(region) \(percent(top)) explicit. If it was explicit after all, mark this entry \u{201C}explicit\u{201D} and it will be closed next time."
+            case .notConfirmed:
+                let seen = parts.map { $0.context.isEmpty ? "" : " (it saw only " + $0.context.joined(separator: ", ") + ")" } ?? ""
+                assessment = "Nothing closed: the image model scored the \(region) \(percent(top)) explicit, but the body-part detector found no explicit body part there\(seen), so the second opinion did not confirm it. "
+                    + "Looks like this (a finger, food, a skin-tone close-up) used to close apps wrongly. If it really was explicit, the detector missed it: the Settings option \u{201C}Close images only when a second check agrees\u{201D} can be turned off."
             }
         }
 

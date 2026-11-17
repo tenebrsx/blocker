@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Builds the body-part detector Word Blocker's Block Log uses to say what an image block was about.
+"""Builds the body-part detector Word Blocker's image scanner uses as its second opinion.
 
 NudeNet v3 (320n, a small YOLOv8n detector) names 18 kinds of body part, each marked exposed or covered
-(`FEMALE_BREAST_EXPOSED`, `BUTTOCKS_EXPOSED`, `FACE_MALE`, ...) with a box and a confidence. It runs only after the
-screen scanner has already blocked something, to write down what was in the picture; it never decides a block.
+(`FEMALE_BREAST_EXPOSED`, `BUTTOCKS_EXPOSED`, `FACE_MALE`, ...) with a box and a confidence. It runs only when the
+image model wants to close something: the image model only proposes, and an explicit body part found here has to
+confirm it (Settings > Setup, "Close images only when a second check agrees"). It also writes down what was in the picture.
 
 This downloads the ONNX weights from the NudeNet GitHub release, checks them against a pinned SHA-256, converts
 them to Core ML, and checks the converted model against ONNX Runtime on harmless generated images. ONNX is plain

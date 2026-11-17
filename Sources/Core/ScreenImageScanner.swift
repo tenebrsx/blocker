@@ -60,6 +60,9 @@ public final class ScreenImageScanner {
     private var frontIsSearchResults = false     // set each scan: a search engine's page is in front
     private var lastIgnoredLog = Date.distantPast
     private var lastTraceLog = Date.distantPast
+    private var rejectionUntil = Date.distantPast               // a recent "no" from the body-part detector is reused until then
+    private var rejectedParts: [BodyPartLogic.Detection] = []
+    private var recheckAfterRejection = false                   // look again once the reused "no" has run out, even if the screen is still
 
     private let queue = DispatchQueue(label: "com.wordblocker.imagescan", qos: .utility)
     private var observers: [NSObjectProtocol] = []
@@ -151,8 +154,11 @@ public final class ScreenImageScanner {
             lastThumbnails[id] = thumbnail
             unchangedScans = changed ? 0 : unchangedScans + 1
 
-            // The model only runs on a changed screen, or to re-check something suspicious.
-            guard changed || suspectPending else { continue }
+            // The model only runs on a changed screen, or to re-check something suspicious, or to look again after
+            // a held look whose "no" from the detector was only reused.
+            let dueAgain = recheckAfterRejection && Date() >= rejectionUntil
+            guard changed || suspectPending || dueAgain else { continue }
+            recheckAfterRejection = false
 
             let scores = classify(image)
             let strict = frontIsSearchResults
@@ -185,20 +191,69 @@ public final class ScreenImageScanner {
                 }
                 suspectPending = true
             case .explicit:
-                // What was in front, before closing it changes that.
+                // What was in front, before anything changes it.
                 let context = await frontContext()
-                suspectPending = false
-                lastThumbnails.removeAll()
-                // Closing comes first; working out and writing down why takes a moment longer. The cover says
-                // what is already known at once, and the full reason when it is ready.
-                let top = supported.max() ?? 0
-                let region = ImageScanLogic.regionName(ofTile: supported.firstIndex(of: top) ?? 0, count: supported.count)
-                await respond(detail: "The image model scored the \(region) \(ImageScanLogic.percent(top)) explicit.\n\nChecking the details...")
-                let event = await recordImageEvent(outcome: .blocked, scores: scores, decided: supported, strict: strict,
-                                                   context: context, looksLike: describePicture(image, scores: supported),
-                                                   bodyParts: await findBodyParts(image, scores: supported))
-                await MainActor.run { ScreenCover.update(detail: event.coverText) }
-                return
+                let needsSecondOpinion = WordStore.shared.imageNeedsSecondOpinion
+
+                // A fingerprint of the strongest flagged area: to see whether it is close to a picture the user has
+                // marked, and kept so the user can mark this look too. (Numbers, not the picture.)
+                let candidates = ImageScanLogic.candidateTiles(scores: supported)
+                let fingerprint = candidates.first.flatMap { fingerprintOfTile(image, index: $0) }
+                let memories = FeedbackStore.shared.memories()
+                let match = fingerprint.flatMap { FeedbackLogic.bestMatch(vector: $0.vector, revision: $0.revision, memories: memories) }
+
+                // The image model is overconfident (a finger and some food scored 100%), so it only proposes. With the
+                // setting on and the detector installed, an explicit body part has to confirm it before anything closes;
+                // a look the user marked "not explicit" is also checked, because the detector always wins over a memory.
+                var parts: [BodyPartLogic.Detection]?
+                var reused = false
+                if BodyPartDetector.shared.isInstalled, needsSecondOpinion || match?.label == .notExplicit {
+                    if Date() < rejectionUntil {
+                        parts = rejectedParts        // asked a moment ago, and the answer was no
+                        reused = true
+                    } else {
+                        parts = await findBodyParts(image, tiles: candidates)
+                    }
+                }
+                let confirmation = ImageScanLogic.confirmation(of: parts)
+
+                switch ImageScanLogic.action(confirmation: confirmation, requireSecondOpinion: needsSecondOpinion, memory: match?.label) {
+                case .hold:
+                    suspectPending = false
+                    if reused {
+                        recheckAfterRejection = true     // do not leave a real picture unchecked on a still screen
+                    } else {
+                        // A fresh "no" for this screen: nothing more to do until the screen changes. (Only a reused "no"
+                        // leaves a recheck pending, so a false alarm on a still screen is not scanned again and again.)
+                        rejectedParts = parts ?? []
+                        rejectionUntil = Date().addingTimeInterval(ImageScanLogic.rejectionCooldown)
+                        recheckAfterRejection = false
+                        if Date().timeIntervalSince(lastIgnoredLog) > 20 {
+                            lastIgnoredLog = Date()
+                            await recordImageEvent(outcome: .nearMiss, nearMiss: match?.label == .notExplicit ? .matchesNotExplicit : .notConfirmed,
+                                                   scores: scores, decided: supported, strict: strict, context: context,
+                                                   looksLike: describePicture(image, scores: supported), bodyParts: parts,
+                                                   memory: match, memoryCount: memories.count, fingerprint: fingerprint)
+                        }
+                    }
+
+                case .close:
+                    suspectPending = false
+                    rejectionUntil = .distantPast
+                    lastThumbnails.removeAll()
+                    // Closing comes first; working out and writing down why takes a moment longer. The cover says
+                    // what is already known at once, and the full reason when it is ready.
+                    let top = supported.max() ?? 0
+                    let region = ImageScanLogic.regionName(ofTile: supported.firstIndex(of: top) ?? 0, count: supported.count)
+                    await respond(detail: "The image model scored the \(region) \(ImageScanLogic.percent(top)) explicit.\n\nChecking the details...")
+                    // Not yet asked (setting off, or nothing to ask until now): the detector describes it afterwards.
+                    if parts == nil { parts = await findBodyParts(image, tiles: ImageScanLogic.candidateTiles(scores: supported)) }
+                    let event = await recordImageEvent(outcome: .blocked, scores: scores, decided: supported, strict: strict,
+                                                       context: context, looksLike: describePicture(image, scores: supported),
+                                                       bodyParts: parts, memory: match, memoryCount: memories.count, fingerprint: fingerprint)
+                    await MainActor.run { ScreenCover.update(detail: event.coverText) }
+                    return
+                }
             }
         }
     }
@@ -374,7 +429,8 @@ public final class ScreenImageScanner {
     private func recordImageEvent(outcome: BlockEvent.Outcome, nearMiss: ImageScanLogic.NearMiss? = nil,
                                   scores: [Double], decided: [Double], strict: Bool,
                                   context: (page: String?, app: String)? = nil, looksLike: String = "",
-                                  bodyParts: [BodyPartLogic.Detection]? = nil) async -> BlockEvent {
+                                  bodyParts: [BodyPartLogic.Detection]? = nil, memory: FeedbackLogic.Match? = nil, memoryCount: Int = 0,
+                                  fingerprint: (revision: Int, vector: [Float])? = nil) async -> BlockEvent {
         let front: (page: String?, app: String)
         if let context = context { front = context } else { front = await frontContext() }
         let action: String
@@ -385,10 +441,16 @@ public final class ScreenImageScanner {
         } else {
             action = "App hidden"
         }
-        let event = BlockEvent.image(
+        var event = BlockEvent.image(
             outcome: outcome, nearMiss: nearMiss, scores: scores, decided: decided, strict: strict, looksLike: looksLike,
-            bodyParts: bodyParts, action: action, page: front.page.map { BlockLog.describePage($0) }, app: front.app
+            bodyParts: bodyParts, memory: memory, memoryCount: memoryCount,
+            action: action, page: front.page.map { BlockLog.describePage($0) }, app: front.app
         )
+        // Keep the fingerprint so the user can mark this entry and teach the scanner.
+        if let fingerprint = fingerprint {
+            event.canLearn = true
+            FeedbackStore.shared.recordPrint(eventID: event.id, revision: fingerprint.revision, vector: fingerprint.vector)
+        }
         BlockLog.record(event)
         return event
     }
@@ -402,12 +464,35 @@ public final class ScreenImageScanner {
         return image.cropping(to: CGRect(x: tile.x, y: tile.y, width: tile.width, height: tile.height))
     }
 
-    /// What the body-part detector finds in the part of the screen that scored highest: nil when its model is not
-    /// installed, an empty list when it looked and found nothing. Like `describePicture` it only runs when
-    /// something is logged, and nothing is kept but the labels.
+    /// The picture fingerprint of one tile of the screen (see `PictureFingerprint`).
+    private func fingerprintOfTile(_ image: CGImage, index: Int) -> (revision: Int, vector: [Float])? {
+        let tiles = ImageScanLogic.tiles(width: image.width, height: image.height)
+        guard index < tiles.count else { return nil }
+        let tile = tiles[index]
+        guard let crop = image.cropping(to: CGRect(x: tile.x, y: tile.y, width: tile.width, height: tile.height)) else { return nil }
+        return PictureFingerprint.make(from: crop)
+    }
+
+    /// What the body-part detector finds in the given tiles of the screen (the same part seen in two overlapping tiles
+    /// counts once): nil when its model is not installed or could not run, an empty list when it looked and found
+    /// nothing. Only run when the image model wants to act or something is logged; nothing is kept but the labels.
+    private func findBodyParts(_ image: CGImage, tiles indices: [Int]) async -> [BodyPartLogic.Detection]? {
+        guard BodyPartDetector.shared.isInstalled else { return nil }
+        let tiles = ImageScanLogic.tiles(width: image.width, height: image.height)
+        var lists: [[BodyPartLogic.Detection]] = []
+        for index in indices where index < tiles.count {
+            let tile = tiles[index]
+            guard let crop = image.cropping(to: CGRect(x: tile.x, y: tile.y, width: tile.width, height: tile.height)),
+                  let found = await BodyPartDetector.shared.detect(in: crop) else { return nil }
+            lists.append(found)
+        }
+        return BodyPartLogic.mergeBest(lists)
+    }
+
+    /// The same, for the part of the screen that scored highest.
     private func findBodyParts(_ image: CGImage, scores: [Double]) async -> [BodyPartLogic.Detection]? {
-        guard BodyPartDetector.shared.isInstalled, let crop = topTileCrop(image, scores: scores) else { return nil }
-        return await BodyPartDetector.shared.detect(in: crop)
+        guard let top = scores.max(), let index = scores.firstIndex(of: top) else { return nil }
+        return await findBodyParts(image, tiles: [index])
     }
 
     /// What a general-purpose picture classifier (Apple's, built into macOS; not the explicit-content model)

@@ -246,12 +246,16 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
 
     /// Where events come from; the shared window reads the log file, a preview can supply its own.
     private let loader: () -> [BlockEvent]
+    private let labelLoader: () -> [String: FeedbackLogic.Label]
+    private let labelSetter: (FeedbackLogic.Label?, String) -> Void
+    private var labels: [String: FeedbackLogic.Label] = [:]
     private var allEvents: [BlockEvent] = []
     private var rows: [Row] = []
     private var filter: BlockEvent.Filter = .blocks
     private var query = ""
     private var selectedID: String?
     private var observer: NSObjectProtocol?
+    private var feedbackObserver: NSObjectProtocol?
 
     // Views
     private let segmented = NSSegmentedControl()
@@ -259,6 +263,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
     private let todayCard = StatCard(caption: "Blocked today")
     private let weekCard = StatCard(caption: "Last 7 days")
     private let totalCard = StatCard(caption: "All logged")
+    private let reviewCard = StatCard(caption: "Your reviews")
     private let splitView = NSSplitView()
     private let tableView = NSTableView()
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
@@ -269,6 +274,11 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
     private let detailTitle = NSTextField(labelWithString: "")
     private let detailSubtitle = NSTextField(labelWithString: "")
     private let badgeRow = NSStackView()
+    private let feedbackRow = NSStackView()
+    private let feedbackPrompt = NSTextField(labelWithString: "Was this explicit?")
+    private let explicitButton = NSButton(title: "Yes, explicit", target: nil, action: nil)
+    private let notExplicitButton = NSButton(title: "No, not explicit", target: nil, action: nil)
+    private let feedbackStatus = NSTextField(labelWithString: "")
     private let mapView = ScoreMapView()
     private let reportScroll = NSTextView.scrollableTextView()
     private let placeholder = NSTextField(wrappingLabelWithString: "Select an entry to see why it was blocked.")
@@ -283,9 +293,14 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         self.init(loader: { BlockLog.loadEvents() })
     }
 
-    /// `loader` supplies the events (newest first); tests and previews pass their own.
-    public init(loader: @escaping () -> [BlockEvent]) {
+    /// `loader` supplies the events (newest first), `labels` and `setLabel` the user's answers; tests and previews
+    /// pass their own, the shared window reads and writes the feedback files.
+    public init(loader: @escaping () -> [BlockEvent],
+                labels: @escaping () -> [String: FeedbackLogic.Label] = { FeedbackStore.shared.labels() },
+                setLabel: @escaping (FeedbackLogic.Label?, String) -> Void = { FeedbackStore.shared.setLabel($0, eventID: $1) }) {
         self.loader = loader
+        self.labelLoader = labels
+        self.labelSetter = setLabel
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1020, height: 740),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -301,12 +316,16 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         observer = NotificationCenter.default.addObserver(forName: .blockLogChanged, object: nil, queue: .main) { [weak self] _ in
             self?.reload()
         }
+        feedbackObserver = NotificationCenter.default.addObserver(forName: .feedbackChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.reload()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     deinit {
         if let observer = observer { NotificationCenter.default.removeObserver(observer) }
+        if let feedbackObserver = feedbackObserver { NotificationCenter.default.removeObserver(feedbackObserver) }
     }
 
     /// Brings the window forward with the latest entries.
@@ -351,6 +370,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         case "image-recheck": name = "eye.fill"
         case "image-near-miss": name = "exclamationmark.triangle.fill"
         case "image-held-back": name = "hand.raised.fill"
+        case "image-not-confirmed": name = "questionmark.circle.fill"
         default: name = "shield.fill"
         }
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)
@@ -373,7 +393,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         searchField.sendsSearchStringImmediately = true
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
-        let cards = NSStackView(views: [todayCard, weekCard, totalCard])
+        let cards = NSStackView(views: [todayCard, weekCard, totalCard, reviewCard])
         cards.orientation = .horizontal
         cards.distribution = .fillEqually
         cards.spacing = 10
@@ -518,6 +538,26 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         badgeRow.spacing = 8
         badgeRow.alignment = .centerY
 
+        // "Was this explicit?": the user's answers teach the scanner (see FeedbackLogic).
+        feedbackPrompt.font = .systemFont(ofSize: 12, weight: .medium)
+        feedbackPrompt.textColor = .secondaryLabelColor
+        for button in [explicitButton, notExplicitButton] {
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.target = self
+        }
+        explicitButton.action = #selector(markExplicit)
+        notExplicitButton.action = #selector(markNotExplicit)
+        explicitButton.toolTip = "This picture was explicit. If the scanner left it open, it will close pictures that look just like it."
+        notExplicitButton.toolTip = "This picture was not explicit. The scanner will hold pictures that look just like it. Marking a block as wrong needs the math challenge, because it loosens protection."
+        feedbackStatus.font = .systemFont(ofSize: 12)
+        feedbackStatus.textColor = .secondaryLabelColor
+        feedbackRow.orientation = .horizontal
+        feedbackRow.spacing = 8
+        feedbackRow.alignment = .centerY
+        for view in [feedbackPrompt, explicitButton, notExplicitButton, feedbackStatus] as [NSView] { feedbackRow.addArrangedSubview(view) }
+
         reportScroll.drawsBackground = false
         reportScroll.hasVerticalScroller = true
         reportScroll.borderType = .noBorder
@@ -535,7 +575,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         detailStack.spacing = 14
         detailStack.edgeInsets = NSEdgeInsets(top: 22, left: 26, bottom: 14, right: 26)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
-        for view in [header, badgeRow, mapView, reportScroll] as [NSView] {
+        for view in [header, badgeRow, feedbackRow, mapView, reportScroll] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             detailStack.addArrangedSubview(view)
         }
@@ -566,6 +606,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
     /// Reads the log again and redraws, keeping the selected entry when it is still there.
     public func reload() {
         allEvents = loader()
+        labels = labelLoader()
         refresh()
     }
 
@@ -586,6 +627,10 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         todayCard.set(stats.today, detail: stats.today == 0 ? "nothing closed" : "\(today.images) images · \(today.websites) sites")
         weekCard.set(stats.week, detail: stats.week == 0 ? "nothing closed" : "\(week.images) images · \(week.websites) sites")
         totalCard.set(stats.total, detail: counts[3] == 0 ? "no near misses" : "\(counts[3]) near misses")
+        let accuracy = FeedbackLogic.accuracy(events: allEvents, labels: labels)
+        var reviewDetail = accuracy.blockPrecision.map { "\(Int(($0 * 100).rounded()))% of blocks right" } ?? "mark entries to measure"
+        if accuracy.missed > 0 { reviewDetail += " · \(accuracy.missed) missed" }
+        reviewCard.set(accuracy.reviewed, detail: reviewDetail)
 
         let shown = allEvents.filter { $0.matches(filter) && $0.matches(search: query) }
         rows = []
@@ -630,7 +675,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
             }
         }
         emptyLabel.isHidden = !shown.isEmpty
-        footerLabel.stringValue = "\(shown.count) shown of \(allEvents.count) logged  ·  kept on this Mac only: no search words, page text or pictures are stored"
+        footerLabel.stringValue = "\(shown.count) shown of \(allEvents.count) logged  ·  kept on this Mac only: no search words, page text or pictures"
     }
 
     private func selectedEvent() -> BlockEvent? {
@@ -674,6 +719,8 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
         badgeRow.addArrangedSubview(pill(event.action, color: .systemGray))
         badgeRow.addArrangedSubview(pill(BlockEvent.appName(event.app), color: .systemBlue))
         badgeRow.addArrangedSubview(pill(event.kind == .image ? "Image scanner" : "Website check", color: .systemGray))
+
+        updateFeedbackRow()
 
         if event.kind == .image, let scores = event.scores, scores.count == 14 {
             mapView.scores = scores
@@ -780,7 +827,7 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
 
         heading("About this entry")
         let note = event.kind == .image
-            ? "The image model gives one number for each look: how likely that part of the screen is to be explicit. It does not name what it sees, and this log shows what the models reported, not what was on screen. The picture itself is never saved."
+            ? "The image model gives one number for each look: how likely that part of the screen is to be explicit. It does not name what it sees, and this log shows what the models reported, not what was on screen. The picture itself is never saved; to learn from your answers it keeps a fingerprint of the flagged area (numbers from macOS's picture feature print, which cannot be turned back into the picture)."
             : "Only the rule that matched is kept. Search words and page text are not saved, and the address is stored without its query string."
         result.append(NSAttributedString(string: note + "\n", attributes: [
             .font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: body
@@ -841,6 +888,53 @@ public final class BlockLogWindowController: NSWindowController, NSTableViewData
 
     public func controlTextDidChange(_ notification: Notification) {
         query = searchField.stringValue
+        refresh()
+    }
+
+    // MARK: Teaching the scanner
+
+    /// Shows the question for an image entry whose fingerprint was kept, and what the user answered.
+    private func updateFeedbackRow() {
+        guard let event = selectedEvent(), event.kind == .image, event.canLearn == true else {
+            feedbackRow.isHidden = true
+            return
+        }
+        feedbackRow.isHidden = false
+        let answer = labels[event.id]
+        explicitButton.state = answer == .explicit ? .on : .off
+        notExplicitButton.state = answer == .notExplicit ? .on : .off
+        switch answer {
+        case .explicit?: feedbackStatus.stringValue = event.outcome == .blocked ? "Right call. Noted." : "It should have been closed. Pictures like it will be."
+        case .notExplicit?: feedbackStatus.stringValue = event.outcome == .blocked ? "Wrong call. Pictures like it will be held." : "Good, it was left alone. Pictures like it will be."
+        case nil: feedbackStatus.stringValue = event.outcome == .blocked ? "Tell the scanner if it got this right." : "Tell the scanner if it was right to leave this open."
+        }
+    }
+
+    @objc private func markExplicit() { answer(.explicit) }
+    @objc private func markNotExplicit() { answer(.notExplicit) }
+
+    /// Records the user's answer. Anything that makes the scanner close less (calling a block wrong, or changing an
+    /// "explicit" answer to "not explicit") loosens protection, so it needs the strict math challenge first.
+    private func answer(_ label: FeedbackLogic.Label) {
+        guard let event = selectedEvent(), event.canLearn == true, labels[event.id] != label else { updateFeedbackRow(); return }
+        let loosens = label == .notExplicit && (event.outcome == .blocked || labels[event.id] == .explicit)
+        if !loosens {
+            save(label, for: event)
+            return
+        }
+        updateFeedbackRow()   // keeps the old answer showing until the challenge is passed
+        MathChallengeController.shared.present(
+            title: "Loosen protection",
+            reason: "Solve \(MathChallenge.strictProblemCount) problems in a row to mark this as not explicit, so pictures like it are closed less.",
+            problemCount: MathChallenge.strictProblemCount
+        ) { [weak self] passed in
+            if passed { self?.save(label, for: event) } else { self?.updateFeedbackRow() }
+        }
+    }
+
+    private func save(_ label: FeedbackLogic.Label, for event: BlockEvent) {
+        labels[event.id] = label
+        labelSetter(label, event.id)
         refresh()
     }
 

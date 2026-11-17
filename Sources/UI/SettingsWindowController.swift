@@ -36,6 +36,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private var modelIcon: NSTextField!
     private var modelDetail: NSTextField!
     private var modelButton: NSButton!
+    private var secondOpinionCheckbox: NSButton!
     private var enableCheckbox: NSButton!
     private var soundCheckbox: NSButton!
     private var fuzzyCheckbox: NSButton!
@@ -151,7 +152,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             let icon = NSTextField(labelWithString: "")
             icon.font = NSFont.systemFont(ofSize: 18)
             icon.alignment = .center
-            icon.frame = NSRect(x: 12, y: y + 36, width: 30, height: 24)
+            icon.frame = NSRect(x: 12, y: y + 26, width: 30, height: 24)
             setupView.addSubview(icon)
 
             let heading = NSMutableAttributedString(
@@ -160,30 +161,42 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
                 string: "   " + tag,
                 attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
             let headingField = NSTextField(labelWithAttributedString: heading)
-            headingField.frame = NSRect(x: 48, y: y + 38, width: 350, height: 18)
+            headingField.frame = NSRect(x: 48, y: y + 30, width: 350, height: 18)
             setupView.addSubview(headingField)
 
-            let detail = caption("", frame: NSRect(x: 48, y: y, width: 340, height: 36))
+            let detail = caption("", frame: NSRect(x: 48, y: y, width: 340, height: 30))
             setupView.addSubview(detail)
 
             let button = NSButton(title: buttonTitle, target: self, action: action)
             button.bezelStyle = .rounded
-            button.frame = NSRect(x: 396, y: y + 16, width: 112, height: 28)
+            button.frame = NSRect(x: 396, y: y + 10, width: 112, height: 28)
             setupView.addSubview(button)
             return (icon, detail, button)
         }
 
-        let accessRow = addSetupRow(y: 204, title: "Accessibility", tag: "Required",
+        let accessRow = addSetupRow(y: 222, title: "Accessibility", tag: "Required",
                                     buttonTitle: "Grant…", action: #selector(permissionButtonClicked))
         accessIcon = accessRow.icon; accessDetail = accessRow.detail; accessButton = accessRow.button
 
-        let screenRow = addSetupRow(y: 134, title: "Screen Recording", tag: "Optional, for the image scanner",
+        let screenRow = addSetupRow(y: 170, title: "Screen Recording", tag: "Optional, for the image scanner",
                                     buttonTitle: "Open Settings", action: #selector(screenRecordingButtonClicked))
         screenIcon = screenRow.icon; screenDetail = screenRow.detail; screenButton = screenRow.button
 
-        let modelRow = addSetupRow(y: 64, title: "Image scanner model", tag: "Optional",
+        let modelRow = addSetupRow(y: 118, title: "Image scanner model", tag: "Optional",
                                    buttonTitle: "How to install", action: #selector(modelHelpClicked))
         modelIcon = modelRow.icon; modelDetail = modelRow.detail; modelButton = modelRow.button
+
+        // The image model is overconfident, so by default it only proposes and the body-part detector has to agree.
+        secondOpinionCheckbox = NSButton(checkboxWithTitle: "Close images only when a second check agrees", target: self,
+                                         action: #selector(secondOpinionToggled(_:)))
+        secondOpinionCheckbox.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        secondOpinionCheckbox.state = WordStore.shared.imageNeedsSecondOpinion ? .on : .off
+        secondOpinionCheckbox.toolTip = "The image model alone often scores harmless pictures (a finger, food, skin tones) as 100% explicit. With this on, it closes something only when the body-part detector also finds an explicit body part. Turning it back on after turning it off needs the math challenge."
+        secondOpinionCheckbox.frame = NSRect(x: 14, y: 92, width: 490, height: 20)
+        setupView.addSubview(secondOpinionCheckbox)
+        setupView.addSubview(caption(
+            "Needs the body-part detector (see the README). Fewer false alarms; turn off to let the image model act alone. Turning it back on needs the math challenge.",
+            frame: NSRect(x: 34, y: 62, width: 470, height: 28)))
 
         setupView.addSubview(createDivider(frame: NSRect(x: 14, y: 54, width: 490, height: 1)))
         setupView.addSubview(caption(
@@ -703,6 +716,8 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             ? "Installed. The scanner runs on your Mac and nothing leaves it."
             : "A one-time setup (a few hundred MB). Until then the image scanner stays off."
         modelButton.isHidden = hasModel
+        secondOpinionCheckbox?.isEnabled = BodyPartDetector.shared.isInstalled
+        secondOpinionCheckbox?.state = WordStore.shared.imageNeedsSecondOpinion ? .on : .off
     }
 
     @objc private func openSetupTab() {
@@ -978,6 +993,20 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         requireMath(toDo: "skip the \(Int(MathChallenge.coolOffSeconds))-second wait when unlocking a site") {
             WordStore.shared.requireUnlockWait = false
             sender.state = .off
+        }
+    }
+
+    /// Off lets the image model act alone (stricter, with more false alarms) and needs nothing. On again is a
+    /// loosening, so it stays off until the strict math challenge is passed.
+    @objc private func secondOpinionToggled(_ sender: NSButton) {
+        if sender.state == .off {
+            WordStore.shared.imageNeedsSecondOpinion = false
+            return
+        }
+        sender.state = .off   // stays off until the challenge is passed
+        requireMath(toDo: "make the image scanner need a second check again") {
+            WordStore.shared.imageNeedsSecondOpinion = true
+            sender.state = .on
         }
     }
 

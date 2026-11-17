@@ -15,6 +15,7 @@ public final class WordStore {
     private let closeBlockedTabsKey = "WordBlocker.CloseBlockedTabs"
     private let requireAllowToEnterKey = "WordBlocker.RequireAllowToEnter"
     private let requireUnlockWaitKey = "WordBlocker.RequireUnlockWait"
+    private let imageNeedsSecondOpinionKey = "WordBlocker.ImageNeedsSecondOpinion"
     private let cinemaModeEnabledKey = "WordBlocker.CinemaModeEnabled"
     private let cinemaModeMessageKey = "WordBlocker.CinemaModeMessage"
     private let isEnabledKey = "WordBlocker.IsEnabled"
@@ -187,6 +188,20 @@ public final class WordStore {
         }
         set {
             defaults.set(newValue, forKey: requireUnlockWaitKey)
+        }
+    }
+
+    /// Whether the image scanner closes something only when the body-part detector also finds an explicit body part.
+    /// On by default: the image model alone is confidently wrong too often (a finger, food and skin-tone close-ups
+    /// scored 100%). Turning it back on is a loosening, so Settings asks for the strict math challenge first. With no
+    /// detector model installed this has no effect.
+    public var imageNeedsSecondOpinion: Bool {
+        get {
+            if defaults.object(forKey: imageNeedsSecondOpinionKey) == nil { return true }
+            return defaults.bool(forKey: imageNeedsSecondOpinionKey)
+        }
+        set {
+            defaults.set(newValue, forKey: imageNeedsSecondOpinionKey)
         }
     }
 

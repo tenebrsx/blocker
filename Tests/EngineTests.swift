@@ -188,6 +188,11 @@ struct TestRunner {
         assertTest(store.requireUnlockWait == false, "The unlock wait can be turned off")
         store.requireUnlockWait = true
         assertTest(store.requireUnlockWait == true, "...and back on")
+        assertTest(store.imageNeedsSecondOpinion == true, "The image scanner needs a second opinion by default")
+        store.imageNeedsSecondOpinion = false
+        assertTest(store.imageNeedsSecondOpinion == false, "...which can be turned off")
+        store.imageNeedsSecondOpinion = true
+        assertTest(store.imageNeedsSecondOpinion == true, "...and back on")
         store.clearTemporaryAllowances()
 
         assertTest(!store.isWebsiteTemporarilyAllowed("twitter.com"), "Twitter not yet allowed")
@@ -579,6 +584,11 @@ struct TestRunner {
         assertTest(Watchdog.pids(ofExecutable: ownPath, owner: getuid()).contains(getpid()), "The watchdog's process lookup finds a running program by its path and owner")
         assertTest(Watchdog.pids(ofExecutable: "/no/such/program", owner: getuid()).isEmpty, "A program that isn't running is not found")
         assertTest(Watchdog.consoleUser() != nil, "The owner of the screen can be read")
+        assertTest(Watchdog.consoleUser() == { var info = stat(); return stat("/dev/console", &info) == 0 ? info.st_uid : nil }(), "The screen's owner is /dev/console's owner")
+        assertTest(Watchdog.isRunning(getpid(), executable: ownPath), "The one-process check finds a running program by its path")
+        assertTest(!Watchdog.isRunning(getpid(), executable: "/no/such/program"), "...and rejects a different program at the same pid")
+        assertTest(!Watchdog.isRunning(0, executable: ownPath) && !Watchdog.isRunning(-1, executable: ownPath), "...and rejects pid 0 and negative pids")
+        assertTest(!Watchdog.isRunning(pid_t(Int32.max), executable: ownPath), "...and a pid that is not running")
 
         // -------------------------------------------------------------
         // Test 17: Screen image scanner decisions (change detection, tiles, verdicts, pacing)
@@ -866,6 +876,117 @@ struct TestRunner {
         assertTest(oldDecoded[0].noteText == "Adult website closed Details: Show Block Log in the menu bar.", "An old entry's note falls back to its headline")
         let rebuilt = BlockEvent.legacy(line: oldImage)
         assertTest(rebuilt?.steps?.first?.result == .decided && rebuilt?.confidence == .notCrossChecked, "An older image block gets its steps rebuilt from the scores")
+
+        // A second opinion before closing: the image model proposes, the body-part detector has to confirm.
+        func part(_ label: Int, _ score: Float) -> BodyPartLogic.Detection { BodyPartLogic.Detection(label: label, score: score, centerX: 0, centerY: 0, width: 1, height: 1) }
+        assertTest(BodyPartLogic.confirms([part(3, 0.716)]) && BodyPartLogic.confirms([part(2, 0.35)]) && BodyPartLogic.confirms([part(14, 0.9)]) && BodyPartLogic.confirms([part(4, 0.5)]) && BodyPartLogic.confirms([part(6, 0.6)]),
+                   "An exposed breast, buttocks, anus or genitals at 35% or more confirms")
+        assertTest(!BodyPartLogic.confirms([part(3, 0.30)]) && !BodyPartLogic.confirms([part(2, 0.349)]), "A weak sign of an explicit part does not")
+        assertTest(!BodyPartLogic.confirms([part(1, 0.95), part(12, 0.9), part(13, 0.9), part(5, 0.9), part(7, 0.9), part(11, 0.9)]) && !BodyPartLogic.confirms([part(16, 0.9), part(17, 0.9), part(0, 0.9), part(15, 0.9)]) && !BodyPartLogic.confirms([]),
+                   "Faces, a bare chest, belly, feet, armpits, anything covered, or nothing at all, do not")
+        let merged = BodyPartLogic.mergeBest([[part(3, 0.5), part(1, 0.4)], [part(3, 0.7)], []])
+        assertTest(merged.count == 2 && merged[0].label == 3 && merged[0].score == 0.7 && merged[1].label == 1, "The same part seen in two looks counts once, with its best score")
+        assertTest(ImageScanLogic.confirmation(of: nil) == .unavailable && ImageScanLogic.confirmation(of: []) == .notConfirmed && ImageScanLogic.confirmation(of: [part(3, 0.6)]) == .confirmed && ImageScanLogic.confirmation(of: [part(1, 0.9)]) == .notConfirmed, "Confirmation: unavailable, not confirmed or confirmed")
+        assertTest(ImageScanLogic.action(confirmation: .confirmed, requireSecondOpinion: true) == .close && ImageScanLogic.action(confirmation: .notConfirmed, requireSecondOpinion: true) == .hold
+                   && ImageScanLogic.action(confirmation: .notConfirmed, requireSecondOpinion: false) == .close && ImageScanLogic.action(confirmation: .unavailable, requireSecondOpinion: true) == .close, "A look the detector examined and did not confirm is held; with no detector, or the setting off, the model acts alone")
+        assertTest(ImageScanLogic.candidateTiles(scores: [0.1, 0.9, 0.6, 1.0, 0.55, 0.2]) == [3, 1, 2] && ImageScanLogic.candidateTiles(scores: [0.1, 0.2]).isEmpty && ImageScanLogic.candidateTiles(scores: [0.9, 0.9], limit: 1) == [0], "The detector is shown the strongest few tiles")
+        // The two real cases from the log. A finger and some food in WhatsApp scored 100% on the model, four scans in a row:
+        let whatsApp = [0.020, 0.019, 0.984, 0.029, 0.071, 0.004, 0.020, 0.007, 0.002, 1.000, 0.992, 0.055, 0.076, 0.300]
+        let whatsAppSupported = ImageScanLogic.supportedScores(whatsApp, tiles: scanTiles)
+        assertTest(ImageScanLogic.verdict(scores: whatsAppSupported, previouslySuspect: false) == .explicit, "The image model alone would have closed WhatsApp")
+        assertTest(ImageScanLogic.candidateTiles(scores: whatsAppSupported) == [9, 10, 2], "...the detector is shown the centre, middle-right and top-right areas")
+        assertTest(ImageScanLogic.action(confirmation: ImageScanLogic.confirmation(of: []), requireSecondOpinion: true) == .hold, "...but the detector found nothing at all there, so it is held, not closed")
+        // A real explicit search test, same day: the detector found a female breast at 72%.
+        let explicitTest = [0.999, 0.004, 0.331, 1.000, 1.000, 0.001, 0.001, 0.002, 0.000, 0.006, 0.922, 1.000, 0.887, 1.000]
+        assertTest(ImageScanLogic.verdict(scores: ImageScanLogic.supportedScores(explicitTest, tiles: scanTiles), previouslySuspect: false) == .explicit
+                   && ImageScanLogic.action(confirmation: ImageScanLogic.confirmation(of: [part(3, 0.716), part(3, 0.716), part(1, 0.694)]), requireSecondOpinion: true) == .close, "A real explicit picture is still closed")
+        assertTest(ImageScanLogic.action(confirmation: ImageScanLogic.confirmation(of: [part(1, 0.422)]), requireSecondOpinion: true) == .hold, "A look where the detector saw only a face is held")
+        assertTest(ImageScanLogic.rejectionCooldown > 0 && ImageScanLogic.rejectionCooldown <= 5, "A recent 'no' is reused only briefly")
+        // What the log says about a held look.
+        let heldWhatsApp = BlockEvent.image(outcome: .nearMiss, nearMiss: .notConfirmed, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "document 43.6%, screenshot 43.6%",
+                                            bodyParts: [], action: "Nothing closed", page: nil, app: "net.whatsapp.WhatsApp", date: stamp)
+        assertTest(heldWhatsApp.check == "image-not-confirmed" && heldWhatsApp.headline == "Flagged, not confirmed: left open" && heldWhatsApp.outcome == .nearMiss && heldWhatsApp.confidence == nil && heldWhatsApp.action == "Nothing closed", "A held look is a near miss named 'flagged, not confirmed'")
+        assertTest(heldWhatsApp.assessment?.hasPrefix("Nothing closed: the image model scored the centre ninth of the screen 100.0% explicit, but the body-part detector found no explicit body part there, so the second opinion did not confirm it.") == true
+                   && heldWhatsApp.assessment?.contains("Close images only when a second check agrees") == true, "The assessment says why nothing closed and how to change it: \(heldWhatsApp.assessment ?? "")")
+        assertTest(heldWhatsApp.steps?.map { $0.result } == [.context, .context, .against, .context] && heldWhatsApp.steps?[0].title == "Image model (proposed closing it)" && heldWhatsApp.steps?[2].detail.contains("That is why nothing was closed.") == true, "The steps: the model proposed, the detector disagreed, and that is why nothing closed: \(String(describing: heldWhatsApp.steps?.map { $0.result }))")
+        assertTest(heldWhatsApp.why.hasPrefix("centre ninth of the screen scored 100.0% explicit, enough to close on its own, but the body-part detector found no explicit body part there"), "The reason line is plain: \(heldWhatsApp.why)")
+        let weakSign = BlockEvent.image(outcome: .nearMiss, nearMiss: .notConfirmed, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "", bodyParts: [part(3, 0.30)], action: "Nothing closed", page: nil, app: nil, date: stamp)
+        assertTest(weakSign.steps?[2].result == .against && weakSign.steps?[2].detail.contains("weak signs of an explicit body part (female breast (exposed) 30.0%); it needs 35.0% or more") == true, "A weak sign is reported as weak, and does not confirm: \(weakSign.steps?[2].detail ?? "")")
+        let weakBlocked = BlockEvent.image(outcome: .blocked, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "", bodyParts: [part(3, 0.30)], action: "Tab closed", page: nil, app: nil, date: stamp)
+        assertTest(weakBlocked.confidence == .modelOnly && weakBlocked.steps?[2].result == .against, "With the setting off, a block with only a weak sign is a model-only block")
+        assertTest(BlockEvent.checkName("image-not-confirmed") == "Screen image scanner", "A held look belongs to the image scanner")
+
+        // Learning from the user's answers: fingerprints, matching, storage, and what it does to a decision.
+        func unit(_ degrees: Double) -> [Float] { [Float(cos(degrees * Double.pi / 180)), Float(sin(degrees * Double.pi / 180))] }
+        assertTest(abs(FeedbackLogic.normalised([3, 4]).reduce(0) { $0 + Double($1) * Double($1) } - 1) < 1e-6 && FeedbackLogic.normalised([0, 0]) == [0, 0], "Fingerprints are scaled to length 1")
+        assertTest(abs(FeedbackLogic.similarity([1, 2, 3], [2, 4, 6]) - 1) < 1e-6 && abs(FeedbackLogic.similarity([1, 0], [0, 1])) < 1e-6 && abs(FeedbackLogic.similarity([1, 0], [-1, 0]) + 1) < 1e-6
+                   && FeedbackLogic.similarity([1, 0], [1, 0, 0]) == 0 && FeedbackLogic.similarity([], []) == 0, "Similarity is the cosine, and 0 when the fingerprints cannot be compared")
+        let wrongMemory = FeedbackLogic.Memory(id: "w", label: .notExplicit, revision: 2, vector: unit(0))
+        let rightMemory = FeedbackLogic.Memory(id: "r", label: .explicit, revision: 2, vector: unit(90))
+        assertTest(FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: [wrongMemory, rightMemory])?.label == .notExplicit
+                   && FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: [wrongMemory, rightMemory])?.id == "w", "The same picture again matches what the user said about it")
+        assertTest(FeedbackLogic.bestMatch(vector: unit(14), revision: 2, memories: [wrongMemory]) != nil && FeedbackLogic.bestMatch(vector: unit(17), revision: 2, memories: [wrongMemory]) == nil, "A match has to be very close (96% alike): 14 degrees apart is, 17 degrees is not")
+        assertTest(FeedbackLogic.bestMatch(vector: unit(0), revision: 1, memories: [wrongMemory]) == nil && FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: []) == nil
+                   && FeedbackLogic.bestMatch(vector: [1, 0, 0], revision: 2, memories: [wrongMemory]) == nil, "Another revision, no memories, or a different size never match")
+        let nearlyWrong = FeedbackLogic.Memory(id: "w2", label: .explicit, revision: 2, vector: unit(1))
+        assertTest(FeedbackLogic.bestMatch(vector: unit(0.5), revision: 2, memories: [wrongMemory, nearlyWrong]) == nil, "Two answers of opposite kinds that are about equally close cancel out")
+        assertTest(FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: [wrongMemory, nearlyWrong])?.id == "w" || FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: [wrongMemory, nearlyWrong]) == nil, "...unless one is clearly closer")
+        let farRight = FeedbackLogic.Memory(id: "r2", label: .explicit, revision: 2, vector: unit(12))
+        assertTest(FeedbackLogic.bestMatch(vector: unit(0), revision: 2, memories: [wrongMemory, farRight])?.id == "w", "The clearly closer answer wins")
+        let roundTrip = FeedbackLogic.decode(FeedbackLogic.encode([3, 4, 0, -2.5]))
+        assertTest(roundTrip?.count == 4 && roundTrip.map { zip($0, FeedbackLogic.normalised([3, 4, 0, -2.5])).allSatisfy { abs($0 - $1) < 1e-6 } } == true && FeedbackLogic.decode("not base64!!") == nil && FeedbackLogic.decode("") == nil, "A fingerprint survives being written as text")
+        let printLines = ["a", "b", "c", "d", "e", "f"]
+        assertTest(FeedbackLogic.keptPrintLines(printLines, answered: ["a"], maxUnanswered: 2, idOf: { $0 }) == ["a", "e", "f"] && FeedbackLogic.keptPrintLines(printLines, answered: [], maxUnanswered: 10, idOf: { $0 }) == printLines,
+                   "Fingerprints the user answered about are kept; the rest keep only the newest few")
+        // How right the scanner has been, from the user's answers.
+        func entry(_ id: String, _ outcome: BlockEvent.Outcome, kind: BlockEvent.Kind = .image) -> BlockEvent {
+            BlockEvent(id: id, date: stamp, kind: kind, outcome: outcome, check: "x", headline: "h", why: "w", action: "a")
+        }
+        let reviewEvents = [entry("1", .blocked), entry("2", .blocked), entry("3", .blocked), entry("4", .nearMiss), entry("5", .nearMiss), entry("6", .blocked, kind: .website), entry("7", .blocked)]
+        let accuracy = FeedbackLogic.accuracy(events: reviewEvents, labels: ["1": .explicit, "2": .explicit, "3": .notExplicit, "4": .explicit, "5": .notExplicit, "6": .notExplicit])
+        assertTest(accuracy == FeedbackLogic.Accuracy(blocksRight: 2, blocksWrong: 1, missed: 1, rightlyLeftOpen: 1) && accuracy.reviewed == 5 && abs((accuracy.blockPrecision ?? 0) - 2.0 / 3.0) < 1e-9,
+                   "Review counts: blocks right and wrong, misses and correct holds; website entries and unmarked ones are not counted: \(accuracy)")
+        assertTest(FeedbackLogic.accuracy(events: reviewEvents, labels: [:]).blockPrecision == nil && FeedbackLogic.accuracy(events: [], labels: [:]).reviewed == 0, "No answers, no accuracy figure")
+        // What a remembered answer does to the decision.
+        assertTest(ImageScanLogic.action(confirmation: .confirmed, requireSecondOpinion: true, memory: .notExplicit) == .close, "An explicit body part found always wins over a remembered 'not explicit'")
+        assertTest(ImageScanLogic.action(confirmation: .notConfirmed, requireSecondOpinion: true, memory: .explicit) == .close, "A remembered 'explicit' closes a look the detector could not confirm")
+        assertTest(ImageScanLogic.action(confirmation: .unavailable, requireSecondOpinion: true, memory: .notExplicit) == .hold && ImageScanLogic.action(confirmation: .notConfirmed, requireSecondOpinion: false, memory: .notExplicit) == .hold,
+                   "A remembered 'not explicit' holds a look, even with no detector or the setting off")
+        assertTest(ImageScanLogic.action(confirmation: .notConfirmed, requireSecondOpinion: true, memory: nil) == .hold && ImageScanLogic.action(confirmation: .unavailable, requireSecondOpinion: true) == .close, "With no memory the rule is unchanged")
+        // What the log says when a memory decided it.
+        let remembered = FeedbackLogic.Match(label: .notExplicit, similarity: 0.97, id: "w")
+        let heldByMemory = BlockEvent.image(outcome: .nearMiss, nearMiss: .matchesNotExplicit, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "", bodyParts: [],
+                                            memory: remembered, memoryCount: 3, action: "Nothing closed", page: nil, app: "net.whatsapp.WhatsApp", date: stamp)
+        assertTest(heldByMemory.check == "image-learned-hold" && heldByMemory.headline == "Held: looks like something you marked not explicit" && heldByMemory.assessment?.hasPrefix("Nothing closed: this looks like a picture you marked as not explicit (97.0% alike)") == true
+                   && heldByMemory.steps?.contains { $0.title == "Your earlier corrections" && $0.result == .decided && $0.detail.contains("so it was held") } == true, "A look held because of the user's answer says so: \(heldByMemory.assessment ?? "")")
+        let closedByMemory = BlockEvent.image(outcome: .blocked, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "", bodyParts: [], memory: FeedbackLogic.Match(label: .explicit, similarity: 0.98, id: "r"),
+                                              memoryCount: 3, action: "Tab closed", page: nil, app: nil, date: stamp)
+        assertTest(closedByMemory.confidence == .learned && closedByMemory.assessment?.hasPrefix("Closed because this looks like a picture you marked as explicit (98.0% alike), although the body-part detector did not find an explicit body part there.") == true
+                   && closedByMemory.steps?.contains { $0.title == "Your earlier corrections" && $0.result == .decided && $0.detail.contains("so it was closed") } == true && closedByMemory.coverText.hasPrefix("Closed because this looks like"), "A close because of the user's answer says so")
+        let overruled = BlockEvent.image(outcome: .blocked, scores: explicitTest, decided: explicitTest, strict: false, looksLike: "", bodyParts: [part(3, 0.7)], memory: remembered, memoryCount: 3, action: "Tab closed", page: nil, app: nil, date: stamp)
+        assertTest(overruled.confidence == .corroborated && overruled.steps?.contains { $0.title == "Your earlier corrections" && $0.result == .against && $0.detail.contains("always wins") } == true, "When the detector overrules a remembered answer, the log says it won")
+        let noMatchYet = BlockEvent.image(outcome: .nearMiss, nearMiss: .notConfirmed, scores: whatsApp, decided: whatsAppSupported, strict: false, looksLike: "", bodyParts: [], memory: nil, memoryCount: 4, action: "Nothing closed", page: nil, app: nil, date: stamp)
+        assertTest(noMatchYet.steps?.contains { $0.title == "Your earlier corrections" && $0.result == .clear && $0.detail.contains("96.0% alike") && $0.detail.contains("4 so far") } == true
+                   && heldWhatsApp.steps?.contains { $0.title == "Your earlier corrections" } == false, "With answers on file but no match the log says so; with none it is silent")
+        assertTest(BlockEvent.Confidence.learned.label == "Matches your correction" && BlockEvent.checkName("image-learned-hold") == "Screen image scanner", "The learned labels read well")
+        var learnable = entry("L1", .blocked); learnable.canLearn = true
+        assertTest(BlockLog.events(fromJSONLines: String(data: try! jsonEncoder.encode(learnable), encoding: .utf8)! + "\n") == [learnable] && oldDecoded[0].canLearn == nil, "Whether an entry can be marked is stored, and old entries read as not markable")
+        // Stored on disk, in a temporary folder.
+        let feedbackFolder = FileManager.default.temporaryDirectory.appendingPathComponent("wb-feedback-\(UUID().uuidString)")
+        FeedbackStore.directoryOverride = feedbackFolder
+        FeedbackStore.shared.recordPrint(eventID: "e1", revision: 2, vector: [3, 4])
+        FeedbackStore.shared.recordPrint(eventID: "e2", revision: 2, vector: [0, 5])
+        assertTest(FeedbackStore.shared.memories().isEmpty && FeedbackStore.shared.labels().isEmpty, "Fingerprints with no answer teach nothing")
+        FeedbackStore.shared.setLabel(.notExplicit, eventID: "e1")
+        let learned = FeedbackStore.shared.memories()
+        assertTest(FeedbackStore.shared.labels() == ["e1": .notExplicit] && learned.count == 1 && learned[0].id == "e1" && learned[0].label == .notExplicit && learned[0].revision == 2 && abs(FeedbackLogic.similarity(learned[0].vector, [3, 4]) - 1) < 1e-6,
+                   "An answer joins its fingerprint into a memory that survives being written to disk")
+        FeedbackStore.shared.setLabel(.explicit, eventID: "e2")
+        assertTest(FeedbackStore.shared.memories().count == 2 && FeedbackStore.shared.labels()["e2"] == .explicit, "A second answer adds a second memory")
+        FeedbackStore.shared.setLabel(nil, eventID: "e1")
+        assertTest(FeedbackStore.shared.memories().map { $0.id } == ["e2"] && FeedbackStore.shared.labels()["e1"] == nil, "Removing an answer removes its memory")
+        try? FileManager.default.removeItem(at: feedbackFolder)
+        FeedbackStore.directoryOverride = nil
 
         // The block log: what is recorded, and that it never keeps the search words.
         let logLine = BlockLog.line(date: Date(timeIntervalSince1970: 0), reason: "image-scanner", detail: "a\nb")

@@ -6,7 +6,8 @@ import Foundation
 /// of the screen, to say what was in it. Optional: without the model file everything else works and the Block
 /// Log simply has no body-part lines.
 ///
-/// It is only called after a block (or a near miss), never on every scan, so it costs no battery. The picture is
+/// It is only called when the image model wants to act or something is logged, never on every scan, so it costs
+/// no battery. The picture is
 /// looked at in memory and is never saved.
 final class BodyPartDetector {
     static let shared = BodyPartDetector()

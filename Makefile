@@ -32,6 +32,8 @@ test:
 		Sources/Core/Guardian.swift \
 		Sources/Core/Watchdog.swift \
 		Sources/Core/BodyPartLogic.swift \
+		Sources/Core/FeedbackLogic.swift \
+		Sources/Core/FeedbackStore.swift \
 		Sources/Core/BlockEvent.swift \
 		Sources/Core/BlockLog.swift \
 		Sources/Core/ImageScanLogic.swift \

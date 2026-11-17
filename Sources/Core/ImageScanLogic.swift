@@ -214,6 +214,8 @@ public enum ImageScanLogic {
         case recheck       // above the repeat bar: the next scan decides
         case belowBar      // a middling score, left alone
         case heldBack      // a coarse hit set aside because the finer tiles did not agree
+        case notConfirmed  // high enough to close, but the body-part detector found no explicit body part
+        case matchesNotExplicit  // high enough to close, but it looks like a picture the user marked "not explicit"
     }
 
     /// Why a high score did not close anything, in one sentence.
@@ -227,6 +229,10 @@ public enum ImageScanLogic {
         case .belowBar:
             let onSearch = strict ? " that applies on a search-results page" : ""
             return "\(region) scored \(percent(top)) explicit, under the \(percent(suspect)) bar\(onSearch), so nothing was closed."
+        case .notConfirmed:
+            return "\(region) scored \(percent(top)) explicit, enough to close on its own, but the body-part detector found no explicit body part there, so nothing was closed."
+        case .matchesNotExplicit:
+            return "\(region) scored \(percent(top)) explicit, enough to close on its own, but it looks like a picture you marked as not explicit, so nothing was closed."
         case .heldBack:
             var held = ""
             if let raw = raw, raw.count == scores.count {
@@ -248,6 +254,48 @@ public enum ImageScanLogic {
             .map { "\($0.name) \(percent($0.confidence))" }
             .joined(separator: ", ")
     }
+
+    // MARK: - Second opinion
+
+    /// What the body-part detector said about a look the image model wanted to act on.
+    public enum Confirmation: Equatable {
+        case confirmed       // it found an explicit body part
+        case notConfirmed    // it looked and found none
+        case unavailable     // it is not installed, or could not run
+    }
+
+    public static func confirmation(of detections: [BodyPartLogic.Detection]?) -> Confirmation {
+        guard let detections = detections else { return .unavailable }
+        return BodyPartLogic.confirms(detections) ? .confirmed : .notConfirmed
+    }
+
+    public enum Action: Equatable {
+        case close, hold
+    }
+
+    /// What to do with a look the image model scored high enough to close on. The image model is overconfident (a
+    /// finger and some food scored 100%), so with the setting on, a look the detector examined and did not confirm is
+    /// held, not closed. Without a detector there is nothing to ask, and the model acts as it always did.
+    public static func action(confirmation: Confirmation, requireSecondOpinion: Bool, memory: FeedbackLogic.Label? = nil) -> Action {
+        // The detector finding an explicit body part always wins, whatever the user marked before.
+        if confirmation == .confirmed { return .close }
+        // Otherwise a look very close to one the user marked decides it.
+        if let memory = memory { return memory == .notExplicit ? .hold : .close }
+        switch confirmation {
+        case .confirmed, .unavailable: return .close
+        case .notConfirmed: return requireSecondOpinion ? .hold : .close
+        }
+    }
+
+    /// The tiles worth showing the detector: those the image model scored at least `minimum`, strongest first. Each
+    /// is a crop of the screen, and the same part usually shows in more than one of them.
+    public static func candidateTiles(scores: [Double], minimum: Double = noteScore, limit: Int = 3) -> [Int] {
+        Array(scores.indices.filter { scores[$0] >= minimum }.sorted { scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1 }.prefix(limit))
+    }
+
+    /// How long a "no" from the detector is reused instead of asking again, so a video that keeps scoring high
+    /// does not keep the detector busy.
+    public static let rejectionCooldown = 3.0
 
     // MARK: - Search results pages
 
