@@ -164,14 +164,21 @@ public final class ScreenImageScanner {
                 await logScan("trace", scores: scores, strict: strict)
             }
 
-            let verdict = ImageScanLogic.verdict(scores: scores, previouslySuspect: suspectPending, onSearchResults: strict)
+            // A coarse look that the finer tiles inside it do not back up is the model misreading a busy screen.
+            let supported = ImageScanLogic.supportedScores(scores, tiles: ImageScanLogic.tiles(width: image.width, height: image.height))
+            let verdict = ImageScanLogic.verdict(scores: supported, previouslySuspect: suspectPending, onSearchResults: strict)
             switch verdict {
             case .clear:
                 // A middling score is not acted on, but it is logged (at most every 20 s) so the log shows what
-                // the model made of a picture it missed, and what the stricter search-page rule held back.
+                // the model made of a picture it missed, and what the stricter rules held back.
                 if (scores.max() ?? 0) >= ImageScanLogic.noteScore, Date().timeIntervalSince(lastIgnoredLog) > 20 {
                     lastIgnoredLog = Date()
-                    let note = strict ? "below the strict search-page bar" : "below the bar, not acted on"
+                    let note: String
+                    if supported != scores {
+                        note = "held back, the finer tiles do not agree"
+                    } else {
+                        note = strict ? "below the strict search-page bar" : "below the bar, not acted on"
+                    }
                     await logScan("mid-score (\(note))", scores: scores, strict: strict)
                 }
                 suspectPending = false

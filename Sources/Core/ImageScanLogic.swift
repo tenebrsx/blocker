@@ -84,6 +84,44 @@ public enum ImageScanLogic {
             + grid(width: width, height: height, columns: 3, rows: 3)
     }
 
+    // MARK: - Corroboration
+
+    /// A coarse look (the whole screen or a quarter) that scores very high must be backed up by at least one of
+    /// the finer tiles inside it scoring at least this much. A real explicit picture shows in the crops that
+    /// contain it; the model's blind spots (a mosaic of Google Images thumbnails, a busy feed) show up in a
+    /// big downscaled look only. A search for "the hangover mike tyson" scored 1.000 on one quarter of the
+    /// screen while every 3x3 tile inside that quarter was under 0.06, and closed the tab.
+    public static let corroborationFloor = 0.15
+
+    /// How much of `inner` lies inside `outer`, 0...1.
+    static func overlap(of inner: Tile, inside outer: Tile) -> Double {
+        let area = inner.width * inner.height
+        guard area > 0 else { return 0 }
+        let width = min(inner.x + inner.width, outer.x + outer.width) - max(inner.x, outer.x)
+        let height = min(inner.y + inner.height, outer.y + outer.height) - max(inner.y, outer.y)
+        guard width > 0, height > 0 else { return 0 }
+        return Double(width * height) / Double(area)
+    }
+
+    /// The scores with every uncorroborated coarse hit set to 0. A tile is only questioned when it scores high
+    /// enough to matter (at the lowest bar, `suspectScore`) and has finer tiles inside it; the finest tiles
+    /// (the 3x3 grid) have nothing finer to be checked against, so a small picture caught only at that scale
+    /// is left alone. `tiles` are the tiles the scores were made from, in the same order.
+    public static func supportedScores(_ scores: [Double], tiles: [Tile]) -> [Double] {
+        guard scores.count == tiles.count else { return scores }
+        var result = scores
+        for (index, tile) in tiles.enumerated() where scores[index] >= suspectScore {
+            let tileArea = tile.width * tile.height
+            // Finer tiles: at most about half the area, with a quarter or more of themselves inside this tile.
+            let finer = tiles.indices.filter { other in
+                tiles[other].width * tiles[other].height * 2 < tileArea && overlap(of: tiles[other], inside: tile) >= 0.25
+            }
+            guard !finer.isEmpty else { continue }
+            if !finer.contains(where: { scores[$0] >= corroborationFloor }) { result[index] = 0 }
+        }
+        return result
+    }
+
     // MARK: - Verdict
 
     public enum Verdict: Equatable {

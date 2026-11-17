@@ -626,6 +626,32 @@ struct TestRunner {
             assertTest(!ImageScanLogic.isSearchResultsPage(page), "Not a search results page: \(page)")
         }
 
+        // A coarse hit must be backed up by the finer tiles inside it. The score lists below are real scans from
+        // the block log (whole | 2x2 | 3x3), at the 1280x800 the scanner captures.
+        let scanTiles = ImageScanLogic.tiles(width: 1280, height: 800)
+        func decided(_ scores: [Double], search: Bool) -> ImageScanLogic.Verdict {
+            ImageScanLogic.verdict(scores: ImageScanLogic.supportedScores(scores, tiles: scanTiles), previouslySuspect: false, onSearchResults: search)
+        }
+        let hangoverSearch = [0.005, 0.004, 0.003, 1.000, 0.000, 0.001, 0.001, 0.002, 0.000, 0.058, 0.000, 0.013, 0.030, 0.051]
+        assertTest(ImageScanLogic.verdict(scores: hangoverSearch, previouslySuspect: false, onSearchResults: true) == .explicit, "Without the check, that Google Images scan closed the tab")
+        assertTest(decided(hangoverSearch, search: true) == .clear && decided(hangoverSearch, search: false) == .clear,
+                   "A quarter at 1.000 with every tile inside it under 0.06 is the model misreading the page: left alone")
+        let realPictureEverywhere = [0.879, 0.003, 0.510, 0.421, 0.985, 0.001, 0.001, 0.002, 0.975, 0.057, 0.037, 0.012, 0.999, 0.012]
+        assertTest(decided(realPictureEverywhere, search: true) == .explicit, "A picture the finer tiles agree on still acts, even on a search page")
+        let realFeedPicture = [0.997, 0.959, 0.933, 0.059, 0.367, 0.003, 0.420, 0.003, 0.524, 1.000, 0.010, 0.010, 0.688, 0.005]
+        assertTest(decided(realFeedPicture, search: false) == .explicit, "A whole-screen hit with finer tiles that agree still acts")
+        let smallPictureInFeed = [0.014, 0.001, 0.001, 0.001, 0.000, 0.001, 0.003, 0.001, 0.018, 0.998, 0.000, 0.001, 0.000, 0.001]
+        assertTest(decided(smallPictureInFeed, search: false) == .explicit, "A small picture caught only by a 3x3 tile (nothing finer to check) still acts")
+        let wholeAloneHigh = [0.998] + [Double](repeating: 0.001, count: 13)
+        assertTest(decided(wholeAloneHigh, search: false) == .clear, "A whole-screen hit with every tile under 0.15 is left alone")
+        let reelQuarter = [0.637, 0.001, 0.013, 0.979, 0.366, 0.001, 0.003, 0.002, 0.031, 0.000, 0.036, 0.003, 0.011, 0.097]
+        assertTest(ImageScanLogic.supportedScores(reelQuarter, tiles: scanTiles)[3] == 0 && ImageScanLogic.supportedScores(reelQuarter, tiles: scanTiles)[0] == 0.637,
+                   "Only the unsupported quarter is dropped; other scores are untouched")
+        assertTest(ImageScanLogic.supportedScores([0.99, 0.5], tiles: scanTiles) == [0.99, 0.5], "A list that does not match the tiles is returned as it is")
+        assertTest(ImageScanLogic.supportedScores(realPictureEverywhere, tiles: scanTiles) == realPictureEverywhere, "Scores the finer tiles agree with are unchanged")
+        assertTest(ImageScanLogic.overlap(of: scanTiles[9], inside: scanTiles[1]) < 0.3 && ImageScanLogic.overlap(of: scanTiles[5], inside: scanTiles[1]) == 1,
+                   "Tile overlap: the 3x3 centre tile is a quarter inside each 2x2 tile, the corner one fully inside")
+
         // The block log: what is recorded, and that it never keeps the search words.
         let logLine = BlockLog.line(date: Date(timeIntervalSince1970: 0), reason: "image-scanner", detail: "a\nb")
         assertTest(logLine.hasSuffix("  image-scanner  a b") && !logLine.contains("\n"), "A log entry is one line: reason, then detail")
