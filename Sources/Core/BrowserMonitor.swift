@@ -357,15 +357,20 @@ public final class BrowserMonitor {
         let target = BlockTarget(domain: domain, pid: pid, bundleId: bundleId,
                                  window: hit.window, title: hit.title)
 
-        // Which check fired, for the block log.
+        // Which check fired, and which rule inside it, for the block log.
         if hit.url.isEmpty {
-            BlockLog.record("website", "adult-title  tab closed  title=\(String((hit.title ?? "").prefix(80)))")
-        } else if AdultSiteMatcher.isAdult(urlOrHost: hit.url) {
-            BlockLog.record("website", "adult-site  tab closed  page=\(BlockLog.describePage(hit.url))")
-        } else if AdultSiteMatcher.isAdultSearch(urlOrHost: hit.url) {
-            BlockLog.record("website", "adult-search  tab closed  page=\(BlockLog.describePage(hit.url))")
+            if let reason = AdultSiteMatcher.adultTitleReason(hit.title ?? "") {
+                BlockLog.record(BlockEvent.website(check: "adult-title", reason: reason, page: nil, app: bundleId))
+            }
         } else {
-            BlockLog.record("website", "adult-community  tab closed  page=\(BlockLog.describePage(hit.url))")
+            let page = BlockLog.describePage(hit.url)
+            if let reason = AdultSiteMatcher.adultSiteReason(urlOrHost: hit.url) {
+                BlockLog.record(BlockEvent.website(check: "adult-site", reason: reason, page: page, app: bundleId))
+            } else if let reason = AdultSiteMatcher.adultSearchReason(urlOrHost: hit.url) {
+                BlockLog.record(BlockEvent.website(check: "adult-search", reason: reason, page: page, app: bundleId))
+            } else if let reason = AdultSiteMatcher.adultCommunityReason(urlOrHost: hit.url) {
+                BlockLog.record(BlockEvent.website(check: "adult-community", reason: reason, page: page, app: bundleId))
+            }
         }
 
         showAdultNote()
@@ -419,7 +424,8 @@ public final class BrowserMonitor {
                 guard flagged,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
                 if let analysis = analysis {
-                    BlockLog.record("website", "page-text  tab closed  score=\(analysis.score) distinct-terms=\(analysis.distinct) top-terms=[\(analysis.terms.joined(separator: ", "))]  page=\(BlockLog.describePage(hit.url))")
+                    BlockLog.record(BlockEvent.pageText(score: analysis.score, distinct: analysis.distinct, terms: analysis.terms,
+                                                        page: BlockLog.describePage(hit.url), app: bundleId))
                 }
                 self.closeFlaggedPage(hit, pid: pid, bundleId: bundleId)
             }

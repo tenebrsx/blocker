@@ -652,6 +652,165 @@ struct TestRunner {
         assertTest(ImageScanLogic.overlap(of: scanTiles[9], inside: scanTiles[1]) < 0.3 && ImageScanLogic.overlap(of: scanTiles[5], inside: scanTiles[1]) == 1,
                    "Tile overlap: the 3x3 centre tile is a quarter inside each 2x2 tile, the corner one fully inside")
 
+        // Explaining a block: where, how sure, which bar, who agreed.
+        assertTest(ImageScanLogic.regionName(ofTile: 0, count: 14) == "whole screen" && ImageScanLogic.regionName(ofTile: 3, count: 14) == "bottom-left quarter of the screen"
+                   && ImageScanLogic.regionName(ofTile: 9, count: 14) == "centre ninth of the screen" && ImageScanLogic.regionName(ofTile: 13, count: 14) == "bottom-right ninth of the screen"
+                   && ImageScanLogic.regionName(ofTile: 5, count: 14) == "top-left ninth of the screen", "Tiles are named by where they sit on the screen")
+        assertTest(ImageScanLogic.regionName(ofTile: 2, count: 5) == "tile 2" && ImageScanLogic.regionName(ofTile: 20, count: 14) == "tile 20", "An unexpected layout falls back to the tile number")
+        assertTest(ImageScanLogic.percent(0.9985) == "99.9%" && ImageScanLogic.percent(1.0) == "100.0%" && ImageScanLogic.percent(0.5) == "50.0%" && ImageScanLogic.percent(0.0042) == "0.4%",
+                   "Scores are written as percentages with one decimal")
+        let hitReason = ImageScanLogic.explanation(scores: realFeedPicture, strict: false)
+        assertTest(hitReason.hasPrefix("centre ninth of the screen scored 100.0% explicit, at or above the 99.0% bar for acting straight away"), "The reason names the tile, the score and the bar: \(hitReason)")
+        assertTest(hitReason.contains("also high: whole screen 99.7%, top-left quarter of the screen 95.9%"), "The reason lists the other tiles that agreed, strongest first: \(hitReason)")
+        let searchReason = ImageScanLogic.explanation(scores: smallPictureInFeed, strict: true)
+        assertTest(searchReason.contains("a search-results page, so the stricter bars") && searchReason.contains("99.8% bar") && searchReason.contains("no other part of the screen scored above 50.0%"),
+                   "A search page says so, and a lone tile says nothing else agreed: \(searchReason)")
+        var repeatScores = [Double](repeating: 0.01, count: 14); repeatScores[12] = 0.95
+        let repeatReason = ImageScanLogic.explanation(scores: repeatScores, strict: false)
+        assertTest(repeatReason.contains("bottom-centre ninth of the screen scored 95.0% explicit on two scans in a row, above the 93.0% bar"), "A repeat sighting says it needed two scans: \(repeatReason)")
+        var rawHeld = hangoverSearch; rawHeld[7] = 0.999      // a real small hit elsewhere, plus the unsupported quarter
+        let heldReason = ImageScanLogic.explanation(scores: ImageScanLogic.supportedScores(rawHeld, tiles: scanTiles), strict: false, raw: rawHeld)
+        assertTest(heldReason.contains("set aside because the finer tiles inside did not agree: bottom-left quarter of the screen 100.0%"), "The reason says which unsupported tile was set aside: \(heldReason)")
+        assertTest(ImageScanLogic.explanation(scores: [], strict: false) == "no scores", "No scores, no reason")
+        assertTest(ImageScanLogic.describeLabels([("person", 0.93), ("swimwear", 0.41), ("beach", 0.08), ("sky", 0.22)]) == "person 93.0%, swimwear 41.0%, sky 22.0%",
+                   "Picture labels: strongest first, weak ones left out")
+        assertTest(ImageScanLogic.describeLabels([("a", 0.9), ("b", 0.8), ("c", 0.7)], limit: 2) == "a 90.0%, b 80.0%" && ImageScanLogic.describeLabels([("a", 0.05)]).isEmpty, "Labels are capped, and none is fine")
+        assertTest(BlockLog.traceFileURL.lastPathComponent == "scan-trace.log" && BlockLog.traceFileURL != BlockLog.fileURL && BlockLog.traceFileURL.deletingLastPathComponent() == BlockLog.fileURL.deletingLastPathComponent(),
+                   "The scan trace goes to its own file beside the block log")
+
+        // Which rule fired: the matcher reports it, without keeping what was typed.
+        let siteReason = AdultSiteMatcher.adultSiteReason(urlOrHost: "https://www.pornhub.com/video")
+        assertTest(siteReason?.rule == "known-domain" && siteReason?.matched == "pornhub.com", "A known adult site reports the built-in list")
+        assertTest(AdultSiteMatcher.adultSiteReason(urlOrHost: "https://example.xxx/")?.rule == "adult-tld" && AdultSiteMatcher.adultSiteReason(urlOrHost: "https://example.xxx/")?.matched == ".xxx", "An adult domain ending reports itself")
+        assertTest(AdultSiteMatcher.adultSiteReason(urlOrHost: "https://free-xxx-videos.net/")?.rule == "domain-keyword" && AdultSiteMatcher.adultSiteReason(urlOrHost: "https://free-xxx-videos.net/")?.matched == "xxx", "A keyword in the site name is named")
+        assertTest(AdultSiteMatcher.adultSiteReason(urlOrHost: "https://sex-videos.net/")?.rule == "domain-word" && AdultSiteMatcher.adultSiteReason(urlOrHost: "https://sex-videos.net/")?.matched == "sex", "A hyphenated word in the site name is named")
+        assertTest(AdultSiteMatcher.adultSiteReason(urlOrHost: "https://www.essex.ac.uk/") == nil, "No reason for an ordinary site")
+        AdultSiteMatcher.domainLookup = { $0 == "obscure-site.net" }
+        assertTest(AdultSiteMatcher.adultSiteReason(urlOrHost: "https://obscure-site.net/")?.rule == "blocklist", "A site on the downloaded lists reports the blocklists")
+        AdultSiteMatcher.domainLookup = nil
+        let porn = AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.google.com/search?q=hot+porn+videos&hl=en")
+        assertTest(porn?.rule == "search-fragment" && porn?.matched == "porn", "A search names the list entry that matched")
+        assertTest(!(porn?.detail.contains("hot") ?? true) && !(porn?.detail.contains("videos") ?? true), "...and does not repeat the other words that were searched")
+        assertTest(AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.bing.com/search?q=nude+beach")?.rule == "search-word" && AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.bing.com/search?q=nude+beach")?.matched == "nude", "An explicit word is named")
+        assertTest(AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.bing.com/search?q=jerk+off")?.rule == "search-phrase", "An explicit phrase is named")
+        let leetReason = AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.google.com/search?q=p0rn")
+        assertTest(leetReason?.matched == "porn" && leetReason?.detail.contains("disguised spelling") == true && !(leetReason?.detail.contains("p0rn") ?? true), "A disguised spelling says so, without the typed form")
+        assertTest(AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.google.com/search?q=p+o+r+n")?.detail.contains("letter by letter") == true, "A spelled-out word says so")
+        assertTest(AdultSiteMatcher.adultSearchReason(urlOrHost: "https://www.google.com/search?q=stanford+students") == nil, "An ordinary search has no reason")
+        let community = AdultSiteMatcher.adultCommunityReason(urlOrHost: "https://www.reddit.com/r/Hentai_Irl/")
+        assertTest(community?.rule == "community-name" && community?.matched == "hentai", "An adult community names the fragment")
+        assertTest(AdultSiteMatcher.adultCommunityReason(urlOrHost: "https://www.reddit.com/r/pics/comments/abc/twink_femboy_getting_tagged/")?.rule == "post-title", "A post title names the word")
+        assertTest(AdultSiteMatcher.adultCommunityReason(urlOrHost: "https://www.reddit.com/r/NoFap/") == nil, "A recovery community has no reason")
+        assertTest(AdultSiteMatcher.adultTitleReason("Free XXX videos")?.rule == "title-keyword" && AdultSiteMatcher.adultTitleReason("Free XXX videos")?.matched == "xxx", "A page title names the keyword")
+
+        // The structured block log: events, their text, filtering and grouping, and older log lines.
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let searchEvent = BlockEvent.website(check: "adult-search", reason: porn!, page: "www.google.com/search", app: "com.google.Chrome", date: stamp)
+        assertTest(searchEvent.headline == "Explicit search closed" && searchEvent.action == "Tab closed" && searchEvent.kind == .website && searchEvent.outcome == .blocked, "A website block says what it was")
+        assertTest(searchEvent.details.contains(BlockEvent.Detail("Matched", "porn")) && searchEvent.details.contains { $0.label == "Search words" && $0.value.contains("Not saved") }, "A search block shows the match and says the words are not kept")
+        let textEvent = BlockEvent.pageText(score: 24, distinct: 5, terms: ["hentaix2", "nudex2"], page: "example.com/gallery", app: "com.apple.Safari", date: stamp)
+        assertTest(textEvent.why.contains("scored 24") && textEvent.why.contains("18 or more") && textEvent.why.contains("5 different") && textEvent.why.contains("hentaix2"), "A page-text block explains the score and the limit: \(textEvent.why)")
+        let imageEvent = BlockEvent.image(outcome: .blocked, scores: realFeedPicture, decided: realFeedPicture, strict: false, looksLike: "people 93.0%, boxing 41.0%",
+                                          action: "Tab closed", page: "www.reddit.com/r/pics", app: "com.google.Chrome", date: stamp)
+        assertTest(imageEvent.check == "image-scan" && imageEvent.scores?.count == 14 && imageEvent.why.hasPrefix("centre ninth of the screen scored 100.0% explicit"), "An image block explains the tile and score: \(imageEvent.why)")
+        assertTest(["Flagged area", "Model score", "Bar cleared", "Also high", "Apple classifier says"].allSatisfy { label in imageEvent.details.contains { $0.label == label } }, "An image block lists its evidence")
+        assertTest(imageEvent.details.first { $0.label == "Bar cleared" }?.value == "99.0% (acts on one scan)", "...including which bar it cleared")
+        var heldRaw = hangoverSearch; heldRaw[7] = 0.999
+        let heldEvent = BlockEvent.image(outcome: .blocked, scores: heldRaw, decided: ImageScanLogic.supportedScores(heldRaw, tiles: scanTiles), strict: true, looksLike: "",
+                                         action: "Tab closed", page: "www.google.com/search", app: "com.google.Chrome", date: stamp)
+        assertTest(heldEvent.details.contains { $0.label == "Set aside" && $0.value.contains("bottom-left quarter") } && heldEvent.details.contains { $0.label == "Page type" }, "A set-aside tile and a search page are both shown")
+        assertTest(!heldEvent.details.contains { $0.label == "Apple classifier says" }, "No labels, no label row")
+        let nearEvent = BlockEvent.image(outcome: .nearMiss, nearMiss: .heldBack, scores: hangoverSearch, decided: ImageScanLogic.supportedScores(hangoverSearch, tiles: scanTiles), strict: false,
+                                         looksLike: "", action: "Nothing closed", page: "www.google.com/search", app: "com.google.Chrome", date: stamp)
+        assertTest(nearEvent.check == "image-held-back" && nearEvent.outcome == .nearMiss && nearEvent.details.first { $0.label == "Model score" }?.value == "100.0% explicit"
+                   && nearEvent.why.contains("set aside"), "A held-back near miss reports the raw score that was set aside: \(nearEvent.why)")
+        let recheckEvent = BlockEvent.image(outcome: .nearMiss, nearMiss: .recheck, scores: repeatScores, decided: repeatScores, strict: false, looksLike: "", action: "Nothing closed", page: nil, app: nil, date: stamp)
+        assertTest(recheckEvent.check == "image-recheck" && recheckEvent.why.contains("next scan") && recheckEvent.page == nil, "A first sighting says the next scan decides")
+
+        // Stored as JSON lines and read back; unreadable lines are skipped.
+        let jsonEncoder = JSONEncoder(); jsonEncoder.dateEncodingStrategy = .iso8601
+        let jsonText = [searchEvent, imageEvent, textEvent].map { String(data: try! jsonEncoder.encode($0), encoding: .utf8)! }.joined(separator: "\n") + "\nnot json at all\n"
+        let readBack = BlockLog.events(fromJSONLines: jsonText)
+        assertTest(readBack == [searchEvent, imageEvent, textEvent], "Events survive being written and read back")
+        assertTest(BlockLog.trimmedLines("a\nb\nc\nd\n", maxLines: 2) == "c\nd\n" && BlockLog.trimmedLines("a\nb\n", maxLines: 5) == "a\nb\n", "The event file keeps the newest lines")
+        assertTest(BlockLog.eventsFileURL.lastPathComponent == "blocks.jsonl" && BlockLog.eventsFileURL.deletingLastPathComponent() == BlockLog.fileURL.deletingLastPathComponent(), "Events live in blocks.jsonl beside the text log")
+        assertTest(imageEvent.logLine.contains("why=\"") && imageEvent.logLine.contains("scores(whole | 2x2 | 3x3)=[") && imageEvent.logLine.contains("page=www.reddit.com/r/pics") && imageEvent.logLine.contains("app=com.google.Chrome"), "The text log line carries the reason, scores, app and page")
+        assertTest(searchEvent.copyText.contains("Why: The search has a word that contains") && searchEvent.copyText.contains("Page: www.google.com/search") && searchEvent.copyText.contains("Matched: porn"), "Copied details are readable")
+
+        // Filters, search, and grouping by day.
+        let everything = [searchEvent, imageEvent, textEvent, nearEvent]
+        assertTest(everything.filter { $0.matches(.blocks) }.count == 3 && everything.filter { $0.matches(.images) } == [imageEvent]
+                   && everything.filter { $0.matches(.websites) } == [searchEvent, textEvent] && everything.filter { $0.matches(.nearMisses) } == [nearEvent], "Filters split blocks, images, websites and near misses")
+        assertTest(searchEvent.matches(search: "") && searchEvent.matches(search: "chrome porn") && searchEvent.matches(search: "GOOGLE") && !searchEvent.matches(search: "porn reddit"), "Search needs every word, in any case, across reason, page and app")
+        let noon = Date(timeIntervalSince1970: 1_700_049_600)   // 2023-11-15 12:00 UTC
+        assertTest(BlockEvent.dayTitle(for: noon, now: noon, calendar: utc) == "Today" && BlockEvent.dayTitle(for: noon.addingTimeInterval(-86_400), now: noon, calendar: utc) == "Yesterday"
+                   && BlockEvent.dayTitle(for: noon.addingTimeInterval(-3 * 86_400), now: noon, calendar: utc) == "Sun 12 Nov" && BlockEvent.dayTitle(for: noon.addingTimeInterval(-400 * 86_400), now: noon, calendar: utc) == "Tue 11 Oct 2022", "Days are grouped as Today, Yesterday or a date")
+        assertTest(BlockEvent.timeText(noon.addingTimeInterval(-7 * 3600 + 5 * 60), calendar: utc) == "05:05" && BlockEvent.timeText(noon, calendar: utc) == "12:00", "Times are 24-hour")
+        let counted = BlockEvent.counts([searchEvent, imageEvent, nearEvent], now: stamp, calendar: utc)
+        assertTest(counted.total == 2 && counted.images == 1 && counted.websites == 1 && counted.today == 2 && counted.week == 2, "Counts ignore near misses")
+        assertTest(BlockEvent.counts([], now: stamp, calendar: utc).total == 0, "An empty log counts zero")
+        assertTest(BlockEvent.appName("com.google.Chrome") == "Chrome" && BlockEvent.appName("org.example.SomeApp") == "SomeApp" && BlockEvent.appName(nil) == "Unknown app" && BlockEvent.appName("?") == "Unknown app", "App names are readable")
+
+        // Lines from the older plain-text log still show up in the window.
+        let oldImage = "2026-11-16 22:37:49  image-scanner  EXPLICIT, tab closed  top=0.9951 tile=3  scores(whole | 2x2 | 3x3)=[0.000 0.011 0.000 0.995 0.000 0.001 0.004 0.000 0.228 0.235 0.001 0.001 0.001 0.000]  strict=false  app=com.google.Chrome  page=www.kobo.com/us/en/ebook/a-future-with-you-yaoi-manga"
+        let oldImageEvent = BlockEvent.legacy(line: oldImage)
+        assertTest(oldImageEvent?.kind == .image && oldImageEvent?.outcome == .blocked && oldImageEvent?.scores?.count == 14 && oldImageEvent?.app == "com.google.Chrome"
+                   && oldImageEvent?.page == "www.kobo.com/us/en/ebook/a-future-with-you-yaoi-manga" && oldImageEvent?.why.contains("bottom-left quarter of the screen") == true, "An older image block is rebuilt with its reason")
+        assertTest(oldImageEvent?.copyText.contains("2026-11-16 22:37:49") == true, "...and keeps its time")
+        let oldMid = "2026-11-16 22:37:35  image-scanner  mid-score (below the bar, not acted on)  top=0.6650 tile=5  scores(whole | 2x2 | 3x3)=[0.001 0.166 0.000 0.113 0.000 0.665 0.003 0.000 0.453 0.001 0.000 0.599 0.015 0.001]  strict=false  app=com.google.Chrome  page=www.kobo.com/us/en/ebook/x"
+        assertTest(BlockEvent.legacy(line: oldMid)?.outcome == .nearMiss && BlockEvent.legacy(line: oldMid)?.check == "image-near-miss", "An older mid-score line becomes a near miss")
+        let oldSuspect = "2026-11-16 22:36:20  image-scanner  suspect  top=0.9971 tile=11  scores(whole | 2x2 | 3x3)=[0.002 0.005 0.005 0.995 0.959 0.001 0.003 0.002 0.068 0.002 0.004 0.997 0.000 0.000]  strict=true  app=com.google.Chrome  page=www.google.com/search"
+        assertTest(BlockEvent.legacy(line: oldSuspect)?.check == "image-recheck" && BlockEvent.legacy(line: oldSuspect)?.strict == true, "An older suspect line becomes a recheck")
+        let oldSearch = BlockEvent.legacy(line: "2026-11-16 22:37:04  website  adult-search  tab closed  page=www.google.com/search")
+        assertTest(oldSearch?.kind == .website && oldSearch?.check == "adult-search" && oldSearch?.page == "www.google.com/search" && oldSearch?.why.contains("before reasons were kept") == true, "An older website block says its reason was not recorded")
+        let oldText = BlockEvent.legacy(line: "2026-11-16 18:40:00  website  page-text  tab closed  score=31 distinct-terms=6 top-terms=[nudex2, sexyx2, xxxx1]  page=example.com/gallery")
+        assertTest(oldText?.check == "page-text" && oldText?.why.contains("scored 31") == true && oldText?.why.contains("nudex2") == true, "An older page-text block keeps its score and terms")
+        assertTest(BlockEvent.legacy(line: "2026-11-16 22:40:47  image-scanner  trace  top=0.0034 tile=10  scores(whole | 2x2 | 3x3)=[0.001]  strict=false  app=x  page=y") == nil, "The score trace is not a block")
+        assertTest(BlockEvent.legacy(line: "garbage") == nil && BlockEvent.legacy(line: "") == nil, "Unreadable lines are skipped")
+        let oldFive = BlockEvent.legacy(line: "2026-11-16 18:22:22  image-scanner  EXPLICIT, tab closed  scores(whole, top-left, top-right, bottom-left, bottom-right)=[0.5586, 0.9980, 0.1333, 0.3633, 0.7656]  strict=false  app=com.google.Chrome  page=www.reddit.com/r/x/")
+        assertTest(oldFive?.outcome == .blocked && oldFive?.scores == nil && oldFive?.why.contains("99.8%") == true, "The first five-score format is read without a region map")
+
+        // The body-part detector: reading its output, naming parts, and writing them into the log.
+        assertTest(BodyPartLogic.labels.count == 18 && BodyPartLogic.names.count == 18 && BodyPartLogic.labels[3] == "FEMALE_BREAST_EXPOSED" && BodyPartLogic.labels[2] == "BUTTOCKS_EXPOSED"
+                   && BodyPartLogic.labels[14] == "MALE_GENITALIA_EXPOSED" && BodyPartLogic.labels[12] == "FACE_MALE", "The detector's 18 classes are in the model's order")
+        assertTest(BodyPartLogic.explicitIndices.allSatisfy { BodyPartLogic.labels[$0].hasSuffix("_EXPOSED") && !BodyPartLogic.labels[$0].hasPrefix("MALE_BREAST") && !BodyPartLogic.labels[$0].hasPrefix("BELLY")
+                   && !BodyPartLogic.labels[$0].hasPrefix("FEET") && !BodyPartLogic.labels[$0].hasPrefix("ARMPITS") } && BodyPartLogic.explicitIndices.count == 5,
+                   "Only exposed genitals, female breast, buttocks and anus count as explicit")
+        assertTest(BodyPartLogic.labels.indices.allSatisfy { index in (BodyPartLogic.names[index].contains("(exposed)")) == BodyPartLogic.labels[index].hasSuffix("_EXPOSED") }, "Plain names agree with the class names about exposed and covered")
+        // A tiny output table: 4 columns (candidate boxes), 22 rows (x, y, width, height, then 18 class scores).
+        func table(_ anchors: [(box: (Float, Float, Float, Float), label: Int, score: Float)]) -> [Float] {
+            var values = [Float](repeating: 0, count: 22 * anchors.count)
+            for (column, anchor) in anchors.enumerated() {
+                values[column] = anchor.box.0; values[anchors.count + column] = anchor.box.1
+                values[2 * anchors.count + column] = anchor.box.2; values[3 * anchors.count + column] = anchor.box.3
+                values[(4 + anchor.label) * anchors.count + column] = anchor.score
+            }
+            return values
+        }
+        let decoded = BodyPartLogic.decode(table([((100, 100, 50, 50), 3, 0.9), ((102, 100, 50, 50), 2, 0.8), ((250, 250, 40, 40), 1, 0.6), ((30, 30, 20, 20), 7, 0.2)]), anchors: 4)
+        assertTest(decoded.count == 2 && decoded[0].label == 3 && decoded[0].score == 0.9 && decoded[1].label == 1 && decoded[1].centerX == 250, "Decoding keeps the strongest of overlapping boxes, drops weak ones, strongest first")
+        assertTest(BodyPartLogic.decode([0, 1, 2], anchors: 4).isEmpty && BodyPartLogic.decode([], anchors: 0).isEmpty, "A table of the wrong size reads as nothing")
+        assertTest(BodyPartLogic.decode(table([((100, 100, 50, 50), 3, 0.3)]), anchors: 1, minimumScore: 0.5).isEmpty, "A box under the minimum score is ignored")
+        let boxA = BodyPartLogic.Detection(label: 0, score: 1, centerX: 50, centerY: 50, width: 40, height: 40)
+        let boxFar = BodyPartLogic.Detection(label: 0, score: 1, centerX: 200, centerY: 200, width: 40, height: 40)
+        let boxHalf = BodyPartLogic.Detection(label: 0, score: 1, centerX: 70, centerY: 50, width: 40, height: 40)
+        assertTest(BodyPartLogic.overlap(boxA, boxA) == 1 && BodyPartLogic.overlap(boxA, boxFar) == 0 && abs(BodyPartLogic.overlap(boxA, boxHalf) - 1.0 / 3.0) < 0.001, "Box overlap is intersection over union")
+        let found = [BodyPartLogic.Detection(label: 3, score: 0.87, centerX: 0, centerY: 0, width: 1, height: 1), BodyPartLogic.Detection(label: 2, score: 0.72, centerX: 0, centerY: 0, width: 1, height: 1),
+                     BodyPartLogic.Detection(label: 3, score: 0.5, centerX: 0, centerY: 0, width: 1, height: 1), BodyPartLogic.Detection(label: 12, score: 0.9, centerX: 0, centerY: 0, width: 1, height: 1),
+                     BodyPartLogic.Detection(label: 13, score: 0.61, centerX: 0, centerY: 0, width: 1, height: 1)]
+        let summary = BodyPartLogic.summarise(found)
+        assertTest(summary.explicit == ["female breast (exposed) 87.0% x2", "buttocks (exposed) 72.0%"] && summary.context == ["face (male) 90.0%", "belly (exposed) 61.0%"], "A summary lists explicit parts and context, best score first, with a count: \(summary)")
+        assertTest(BodyPartLogic.sentence(summary) == "The body-part detector found: female breast (exposed) 87.0% x2, buttocks (exposed) 72.0%; also seen: face (male) 90.0%, belly (exposed) 61.0%.", "The sentence for explicit parts")
+        assertTest(BodyPartLogic.sentence(BodyPartLogic.summarise([found[3]])) == "The body-part detector found no explicit body part in that area; it saw: face (male) 90.0%.", "The sentence for context only")
+        assertTest(BodyPartLogic.sentence(BodyPartLogic.summarise([])).contains("found no body parts") && BodyPartLogic.sentence(BodyPartLogic.summarise([])).contains("drawn or unusual"), "The sentence for nothing explains why drawn pictures are often missed")
+        let withParts = BlockEvent.image(outcome: .blocked, scores: realFeedPicture, decided: realFeedPicture, strict: false, looksLike: "", bodyParts: found, action: "Tab closed", page: "x.com/a", app: "com.google.Chrome", date: stamp)
+        assertTest(withParts.why.contains("The body-part detector found: female breast (exposed) 87.0% x2") && withParts.details.contains(BlockEvent.Detail("Body parts found", "female breast (exposed) 87.0% x2, buttocks (exposed) 72.0%"))
+                   && withParts.details.contains(BlockEvent.Detail("Also seen", "face (male) 90.0%, belly (exposed) 61.0%")), "A block with detector findings says them in the reason and the evidence")
+        let noParts = BlockEvent.image(outcome: .blocked, scores: realFeedPicture, decided: realFeedPicture, strict: false, looksLike: "", bodyParts: [], action: "Tab closed", page: "x.com/a", app: nil, date: stamp)
+        assertTest(noParts.details.contains(BlockEvent.Detail("Body parts found", "None explicit")) && noParts.details.contains(BlockEvent.Detail("Also seen", "Nothing else")) && noParts.why.contains("found no body parts"), "A detector run that found nothing says so")
+        assertTest(!imageEvent.details.contains { $0.label == "Body parts found" } && !imageEvent.why.contains("body-part detector"), "Without the detector's model, the log says nothing about body parts")
+
         // The block log: what is recorded, and that it never keeps the search words.
         let logLine = BlockLog.line(date: Date(timeIntervalSince1970: 0), reason: "image-scanner", detail: "a\nb")
         assertTest(logLine.hasSuffix("  image-scanner  a b") && !logLine.contains("\n"), "A log entry is one line: reason, then detail")

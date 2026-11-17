@@ -170,35 +170,71 @@ public enum AdultSiteMatcher {
 
     // MARK: - Checks
 
-    /// True when the address itself is an adult site.
-    public static func isAdult(urlOrHost: String) -> Bool {
-        guard let host = host(from: urlOrHost) else { return false }
-        let labels = host.split(separator: ".").map(String.init)
-        guard let tld = labels.last else { return false }
+    /// Why something was judged adult: which rule fired, the list entry that matched, and a plain-English
+    /// sentence for the block log. `matched` is always an entry of one of this file's lists (or the site's own
+    /// address), never the visitor's search words, so a record of it does not keep what was searched.
+    public struct MatchReason: Equatable {
+        public let rule: String
+        public let matched: String
+        public let detail: String
 
-        if adultTLDs.contains(tld) { return true }
+        public init(rule: String, matched: String, detail: String) {
+            self.rule = rule
+            self.matched = matched
+            self.detail = detail
+        }
+    }
+
+    /// Why the address itself is an adult site, or nil when it is not.
+    public static func adultSiteReason(urlOrHost: String) -> MatchReason? {
+        guard let host = host(from: urlOrHost) else { return nil }
+        let labels = host.split(separator: ".").map(String.init)
+        guard let tld = labels.last else { return nil }
+
+        if adultTLDs.contains(tld) {
+            return MatchReason(rule: "adult-tld", matched: "." + tld,
+                               detail: "The address ends in “.\(tld)”, a domain ending used only for adult sites.")
+        }
 
         // Known domain: check every suffix (a.b.pornhub.com -> b.pornhub.com -> pornhub.com).
-        for start in 0..<labels.count where knownDomains.contains(labels[start...].joined(separator: ".")) {
-            return true
+        for start in 0..<labels.count {
+            let candidate = labels[start...].joined(separator: ".")
+            if knownDomains.contains(candidate) {
+                return MatchReason(rule: "known-domain", matched: candidate,
+                                   detail: "The site (\(candidate)) is on the built-in list of adult sites.")
+            }
         }
 
         // The big downloaded lists (about a million domains).
-        if let lookup = domainLookup, lookup(host) { return true }
+        if let lookup = domainLookup, lookup(host) {
+            return MatchReason(rule: "blocklist", matched: host,
+                               detail: "The site (\(host)) is on one of the downloaded adult-site blocklists (StevenBlack, Blocklist Project).")
+        }
 
         // Keyword heuristics on every label except the TLD.
         for label in labels.dropLast() {
-            for fragment in labelSubstrings where label.contains(fragment) { return true }
-            for token in label.split(separator: "-") where labelTokens.contains(String(token)) { return true }
+            for fragment in labelSubstrings where label.contains(fragment) {
+                return MatchReason(rule: "domain-keyword", matched: fragment,
+                                   detail: "The site name contains “\(fragment)”, which does not turn up in ordinary site names.")
+            }
+            for token in label.split(separator: "-") where labelTokens.contains(String(token)) {
+                return MatchReason(rule: "domain-word", matched: String(token),
+                                   detail: "The site name has the word “\(token)” in it, between hyphens.")
+            }
         }
-        return false
+        return nil
     }
 
-    /// True when the URL is a search (on any site) for adult content, e.g. `google.com/search?q=porn`.
-    public static func isAdultSearch(urlOrHost: String) -> Bool {
+    /// True when the address itself is an adult site.
+    public static func isAdult(urlOrHost: String) -> Bool {
+        adultSiteReason(urlOrHost: urlOrHost) != nil
+    }
+
+    /// Why the URL is a search (on any site) for adult content, e.g. `google.com/search?q=porn`, or nil.
+    public static func adultSearchReason(urlOrHost: String) -> MatchReason? {
         let lowered = Substring(trimmed(urlOrHost).lowercased())
-        guard !lowered.isEmpty, let text = withoutScheme(lowered) else { return false }
-        guard let questionMark = text.firstIndex(of: "?") else { return false }
+        guard !lowered.isEmpty, let text = withoutScheme(lowered) else { return nil }
+        guard let questionMark = text.firstIndex(of: "?") else { return nil }
 
         var query = text[text.index(after: questionMark)...]
         if let hash = query.firstIndex(of: "#") { query = query[query.startIndex..<hash] }
@@ -207,9 +243,14 @@ public enum AdultSiteMatcher {
             guard let equals = pair.firstIndex(of: "=") else { continue }
             let name = String(pair[pair.startIndex..<equals])
             guard queryParameters.contains(name) else { continue }
-            if containsAdultTerms(percentDecoded(pair[pair.index(after: equals)...])) { return true }
+            if let reason = adultTermReason(percentDecoded(pair[pair.index(after: equals)...])) { return reason }
         }
-        return false
+        return nil
+    }
+
+    /// True when the URL is a search (on any site) for adult content, e.g. `google.com/search?q=porn`.
+    public static func isAdultSearch(urlOrHost: String) -> Bool {
+        adultSearchReason(urlOrHost: urlOrHost) != nil
     }
 
     // MARK: - Reddit communities and post titles
@@ -239,23 +280,26 @@ public enum AdultSiteMatcher {
         "ahegao", "futanari", "paizuri", "lolicon", "shotacon", "rule34"
     ]
 
-    /// True for a Reddit page in an adult community, or for a post whose title says it is explicit media.
-    public static func isAdultCommunityPage(urlOrHost: String) -> Bool {
-        guard let host = host(from: urlOrHost), host == "reddit.com" || host.hasSuffix(".reddit.com") else { return false }
+    /// Why a Reddit page counts as an adult community (or a post titled as explicit media), or nil.
+    public static func adultCommunityReason(urlOrHost: String) -> MatchReason? {
+        guard let host = host(from: urlOrHost), host == "reddit.com" || host.hasSuffix(".reddit.com") else { return nil }
         let lowered = Substring(trimmed(urlOrHost).lowercased())
-        guard let text = withoutScheme(lowered), let slash = text.firstIndex(of: "/") else { return false }
+        guard let text = withoutScheme(lowered), let slash = text.firstIndex(of: "/") else { return nil }
         var path = text[slash...]
         if let cut = path.firstIndex(where: { $0 == "?" || $0 == "#" }) { path = path[path.startIndex..<cut] }
 
         let segments = path.split(separator: "/").map(String.init)
-        guard segments.count >= 2, segments[0] == "r" else { return false }
+        guard segments.count >= 2, segments[0] == "r" else { return nil }
 
         let community = segments[1]
-        if recoveryCommunities.contains(where: { community.contains($0) }) { return false }
-        if communityFragments.contains(where: { community.contains($0) }) { return true }
+        if recoveryCommunities.contains(where: { community.contains($0) }) { return nil }
+        if let fragment = communityFragments.first(where: { community.contains($0) }) {
+            return MatchReason(rule: "community-name", matched: fragment,
+                               detail: "The community name (r/\(community)) contains “\(fragment)”, which marks an adult community.")
+        }
 
         // /r/<community>/comments/<id>/<title_slug>
-        guard segments.count >= 5, segments[2] == "comments" else { return false }
+        guard segments.count >= 5, segments[2] == "comments" else { return nil }
         var word = ""
         var words: [String] = []
         for character in segments[4] {
@@ -267,10 +311,26 @@ public enum AdultSiteMatcher {
             }
         }
         if !word.isEmpty { words.append(word) }
-        return words.contains { postTitleWords.contains($0) }
+        if let hit = words.first(where: { postTitleWords.contains($0) }) {
+            return MatchReason(rule: "post-title", matched: hit,
+                               detail: "The post’s title (it is in the address) contains the word “\(hit)”, which means explicit media.")
+        }
+        return nil
+    }
+
+    /// True for a Reddit page in an adult community, or for a post whose title says it is explicit media.
+    public static func isAdultCommunityPage(urlOrHost: String) -> Bool {
+        adultCommunityReason(urlOrHost: urlOrHost) != nil
     }
 
     static func containsAdultTerms(_ phrase: String) -> Bool {
+        adultTermReason(phrase) != nil
+    }
+
+    /// Which explicit phrase, word or word fragment a phrase contains, or nil. The result names the list entry
+    /// that matched and how it was spelled (plainly, disguised with digits or stretched letters, or spelled out
+    /// letter by letter), not the words that were typed.
+    static func adultTermReason(_ phrase: String) -> MatchReason? {
         var word = ""
         var words: [String] = []
         for character in phrase.lowercased() {
@@ -284,6 +344,7 @@ public enum AdultSiteMatcher {
         if !word.isEmpty { words.append(word) }
 
         // Spelled out with spaces ("p o r n"): a run of three or more single letters also counts as one word.
+        var spelledOut: Set<String> = []
         var run = ""
         var runLength = 0
         for word in words {
@@ -291,23 +352,40 @@ public enum AdultSiteMatcher {
                 run += word
                 runLength += 1
             } else {
-                if runLength >= 3 { words.append(run) }
+                if runLength >= 3 { words.append(run); spelledOut.insert(run) }
                 run = ""
                 runLength = 0
             }
         }
-        if runLength >= 3 { words.append(run) }
+        if runLength >= 3 { words.append(run); spelledOut.insert(run) }
 
         let sentence = " " + words.joined(separator: " ") + " "
-        for phrase in queryPhrases where sentence.contains(" " + phrase + " ") { return true }
+        for phrase in queryPhrases where sentence.contains(" " + phrase + " ") {
+            return MatchReason(rule: "search-phrase", matched: phrase,
+                               detail: "The search contains the phrase “\(phrase)”, which is on the explicit-phrase list.")
+        }
 
         for word in words {
             for candidate in spellingVariants(of: word) {
-                if queryWords.contains(candidate) { return true }
-                for fragment in queryFragments where candidate.contains(fragment) { return true }
+                let how: String
+                if spelledOut.contains(word) {
+                    how = ", spelled out letter by letter"
+                } else if candidate != word {
+                    how = ", in a disguised spelling (digits swapped for letters, or stretched letters)"
+                } else {
+                    how = ""
+                }
+                if queryWords.contains(candidate) {
+                    return MatchReason(rule: "search-word", matched: candidate,
+                                       detail: "The search contains the explicit word “\(candidate)”\(how).")
+                }
+                for fragment in queryFragments where candidate.contains(fragment) {
+                    return MatchReason(rule: "search-fragment", matched: fragment,
+                                       detail: "The search has a word that contains “\(fragment)”\(how), which only turns up in explicit terms.")
+                }
             }
         }
-        return false
+        return nil
     }
 
     /// The word itself, plus versions with common disguises undone: digits swapped for letters
@@ -342,9 +420,16 @@ public enum AdultSiteMatcher {
     }
 
     /// Fallback for when a browser hides its address: a page title that names an adult site or category.
-    public static func isAdultTitle(_ title: String) -> Bool {
+    public static func adultTitleReason(_ title: String) -> MatchReason? {
         let lowered = title.lowercased()
-        for fragment in titleFragments where lowered.contains(fragment) { return true }
-        return false
+        for fragment in titleFragments where lowered.contains(fragment) {
+            return MatchReason(rule: "title-keyword", matched: fragment,
+                               detail: "The browser did not show the page address, and the page title contains “\(fragment)”.")
+        }
+        return nil
+    }
+
+    public static func isAdultTitle(_ title: String) -> Bool {
+        adultTitleReason(title) != nil
     }
 }

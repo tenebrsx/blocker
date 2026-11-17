@@ -31,6 +31,8 @@ test:
 		Sources/Core/TrustedSites.swift \
 		Sources/Core/Guardian.swift \
 		Sources/Core/Watchdog.swift \
+		Sources/Core/BodyPartLogic.swift \
+		Sources/Core/BlockEvent.swift \
 		Sources/Core/BlockLog.swift \
 		Sources/Core/ImageScanLogic.swift \
 		Tests/EngineTests.swift \

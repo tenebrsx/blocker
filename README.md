@@ -29,6 +29,7 @@ A native, high-performance background utility written in Swift for macOS that pr
 - **Hard to kill.** Polite quit signals (Activity Monitor "Quit", `kill`, `killall`) are ignored. A second copy of the app runs as a guardian and reopens the app within about half a second if it is force-quit, and the app does the same for the guardian. Activity Monitor is closed the moment it opens while protection is on. Turn on **Start at login, and relaunch if force-quit** in Settings to add launchd as a third layer.
 - **Unkillable mode (optional, needs your Mac password).** A normal app can't stop a force-quit, so this installs a tiny helper that runs as **root**: your account can't kill it, and it reopens Word Blocker within about half a second if the app is killed. With it on, quitting needs the math challenge *and* the administrator password, and so does turning it off. Switch it on in Settings; macOS shows its own password prompt (Word Blocker never sees the password).
 - **On-device image scanner (optional).** Looks at the screen with an on-device model (Core ML + Vision) and blacks it out and closes the tab when it sees explicit images. Nothing leaves your Mac. Needs Screen Recording permission and the model (see below).
+- **Block Log window.** The menu's **Show Block Log…** opens a window of everything Word Blocker closed, and exactly why: a list grouped by day (filter by All blocks, Images, Websites or Near misses, and search by reason, page or app) beside the full explanation of the selected entry. A website block names the check and the rule that matched (the built-in site list, a keyword in the site name, an explicit word or phrase in a search, an adult Reddit community or post title). A page-text block shows its score against the limit and the main terms. An image block shows the model's score for the whole screen, each quarter and each ninth as a map with the deciding part outlined, which bar it cleared, which other parts agreed, any part that was set aside because the finer tiles did not back it up, what the optional body-part detector found in that part of the screen (`female breast (exposed) 87%, face (male) 90%`), and what Apple's general picture classifier calls it (`people 93%, boxing 41%`). The scanner's model itself only gives one number per look (how likely a picture is explicit) and cannot name what it sees; the body-part and Apple labels come from other models, run only when something is logged, and only look at the part of the screen that scored highest. The body-part detector is trained on photos, so drawn or unusual pictures are often reported as having none. Near misses are high scores that were not enough to close anything. It all stays on this Mac in `~/Library/Application Support/WordBlocker/` (`blocks.jsonl` for the window, `blocks.log` as plain text): it holds the rule that matched, never search words, page text or pictures, and addresses without their query string. The optional score trace (`defaults write com.wordblocker.app WordBlocker.ScanTrace -bool true`) goes to its own `scan-trace.log`.
 
 **What it cannot do:** without Unkillable mode, a user-level app can't stop `kill -9` from Terminal, or someone who kills the app and its guardian in the same instant; they come back within about a second, but they can be killed. With Unkillable mode, only someone with the Mac's administrator password can stop it (nothing can stop an administrator who has that password; if you want that out of reach, don't be the administrator).
 
@@ -55,6 +56,18 @@ python3 -m venv /tmp/nsfw-venv
 ```
 
 Then restart the app and grant **Screen Recording** when macOS asks. The menu's "Image scanner" line shows its status.
+
+### Optional: body-part detector for the Block Log
+
+With it, an image block says which body parts were in the flagged area, not just how sure the model was. It is [NudeNet](https://github.com/notAI-tech/NudeNet) v3 (320n, a small YOLOv8n detector, about 12 MB of weights). It never decides a block; it only describes one afterwards. NudeNet and the YOLOv8 it is trained with are AGPL-3.0: fine to run on your own Mac, but do not put the converted model in a public release. Create it once:
+
+```bash
+python3 -m venv /tmp/nudenet-venv
+/tmp/nudenet-venv/bin/pip install onnx onnx2torch onnxruntime torch coremltools numpy pillow
+/tmp/nudenet-venv/bin/python -I scripts/convert_nudenet_model.py
+```
+
+The script downloads the ONNX weights from the NudeNet GitHub release, refuses anything that does not match a pinned SHA-256, converts them to Core ML and checks the result against ONNX Runtime. It saves `~/Library/Application Support/WordBlocker/NudeNet.mlpackage`; restart the app afterwards. Only ONNX is used, never the `.pt` checkpoints, which are pickles that can run code when loaded.
 
 ---
 

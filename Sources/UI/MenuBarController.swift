@@ -52,6 +52,10 @@ public final class MenuBarController {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let blockLogItem = NSMenuItem(title: "Show Block Log...", action: #selector(openBlockLog), keyEquivalent: "")
+        blockLogItem.target = self
+        menu.addItem(blockLogItem)
+
         let permissionItem = NSMenuItem(title: "Accessibility Settings...", action: #selector(openAccessibility), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -164,6 +168,11 @@ public final class MenuBarController {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Opens the Block Log window: what was blocked, by which check, and exactly why.
+    @objc private func openBlockLog() {
+        BlockLogWindowController.shared.show()
     }
 
     @objc private func openAccessibility() {

@@ -140,6 +140,102 @@ public enum ImageScanLogic {
         return .clear
     }
 
+    // MARK: - Explaining a block
+
+    /// Where on the screen a tile is, in words, for the standard 14-tile layout (whole, 2x2, 3x3).
+    public static func regionName(ofTile index: Int, count: Int) -> String {
+        guard count == 14, index >= 0, index < count else { return "tile \(index)" }
+        if index == 0 { return "whole screen" }
+        if index <= 4 {
+            return ["top-left", "top-right", "bottom-left", "bottom-right"][index - 1] + " quarter of the screen"
+        }
+        return ["top-left", "top-centre", "top-right", "middle-left", "centre", "middle-right",
+                "bottom-left", "bottom-centre", "bottom-right"][index - 5] + " ninth of the screen"
+    }
+
+    /// `0.9985` as `99.9%` (no Foundation, so tests and logs agree on the rounding).
+    public static func percent(_ value: Double) -> String {
+        let tenths = Int((min(max(value, 0), 1) * 1000).rounded())
+        return "\(tenths / 10).\(tenths % 10)%"
+    }
+
+    /// The reason for a block as one plain sentence: which part of the screen the model was looking at, how sure
+    /// it was and which bar that cleared, and which other tiles agreed. The model gives one number per look (how
+    /// likely the picture is explicit); it does not name what it sees, so this is as specific as the scores allow.
+    /// `raw` are the scores before `supportedScores` set any aside; when given and different, the sentence also
+    /// says which tiles were set aside and why.
+    public static func explanation(scores: [Double], strict: Bool, raw: [Double]? = nil) -> String {
+        guard let top = scores.max(), let index = scores.firstIndex(of: top) else { return "no scores" }
+        let where_ = regionName(ofTile: index, count: scores.count)
+        let hit = strict ? searchHitScore : hitScore
+        let suspect = strict ? searchSuspectScore : suspectScore
+        var sentence = "\(where_) scored \(percent(top)) explicit"
+        if top >= hit {
+            sentence += ", at or above the \(percent(hit)) bar for acting straight away"
+        } else {
+            sentence += " on two scans in a row, above the \(percent(suspect)) bar for a repeat sighting"
+        }
+        if strict { sentence += " (a search-results page, so the stricter bars)" }
+
+        let others = scores.indices
+            .filter { $0 != index && scores[$0] >= noteScore }
+            .sorted { scores[$0] > scores[$1] }
+            .prefix(4)
+            .map { "\(regionName(ofTile: $0, count: scores.count)) \(percent(scores[$0]))" }
+        sentence += others.isEmpty
+            ? "; no other part of the screen scored above \(percent(noteScore))"
+            : "; also high: " + others.joined(separator: ", ")
+
+        if let raw = raw, raw.count == scores.count {
+            let setAside = scores.indices.filter { raw[$0] != scores[$0] }
+                .map { "\(regionName(ofTile: $0, count: scores.count)) \(percent(raw[$0]))" }
+            if !setAside.isEmpty {
+                sentence += "; set aside because the finer tiles inside did not agree: " + setAside.joined(separator: ", ")
+            }
+        }
+        return sentence
+    }
+
+    /// What happened to a high score that did not close anything.
+    public enum NearMiss: String, Equatable {
+        case recheck       // above the repeat bar: the next scan decides
+        case belowBar      // a middling score, left alone
+        case heldBack      // a coarse hit set aside because the finer tiles did not agree
+    }
+
+    /// Why a high score did not close anything, in one sentence.
+    public static func nearMissExplanation(scores: [Double], strict: Bool, kind: NearMiss, raw: [Double]? = nil) -> String {
+        guard let top = scores.max(), let index = scores.firstIndex(of: top) else { return "no scores" }
+        let region = regionName(ofTile: index, count: scores.count)
+        let suspect = strict ? searchSuspectScore : suspectScore
+        switch kind {
+        case .recheck:
+            return "\(region) scored \(percent(top)) explicit, above the \(percent(suspect)) bar for a repeat sighting; the tab closes only if the next scan scores that high again."
+        case .belowBar:
+            let onSearch = strict ? " that applies on a search-results page" : ""
+            return "\(region) scored \(percent(top)) explicit, under the \(percent(suspect)) bar\(onSearch), so nothing was closed."
+        case .heldBack:
+            var held = ""
+            if let raw = raw, raw.count == scores.count {
+                let names = scores.indices.filter { raw[$0] != scores[$0] }
+                    .map { "\(regionName(ofTile: $0, count: scores.count)) \(percent(raw[$0]))" }
+                held = names.isEmpty ? "" : " (" + names.joined(separator: ", ") + ")"
+            }
+            return "A high score\(held) was set aside because none of the finer tiles inside it agreed; nothing was closed."
+        }
+    }
+
+    /// Labels from a general-purpose picture classifier, as `person 93%, swimwear 41%`: the strongest few that
+    /// are at least `minimum` likely. Empty when none qualify.
+    public static func describeLabels(_ labels: [(name: String, confidence: Double)], minimum: Double = 0.15, limit: Int = 6) -> String {
+        labels
+            .filter { $0.confidence >= minimum }
+            .sorted { $0.confidence != $1.confidence ? $0.confidence > $1.confidence : $0.name < $1.name }
+            .prefix(limit)
+            .map { "\($0.name) \(percent($0.confidence))" }
+            .joined(separator: ", ")
+    }
+
     // MARK: - Search results pages
 
     /// True for a search engine's page (Google, Bing, DuckDuckGo and similar), where the screen is a grid of

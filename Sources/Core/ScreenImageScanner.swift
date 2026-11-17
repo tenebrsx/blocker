@@ -161,7 +161,7 @@ public final class ScreenImageScanner {
             // the scores of a scan, at most every 4 s, so the bar can be set from what the model really says.
             if UserDefaults.standard.bool(forKey: "WordBlocker.ScanTrace"), Date().timeIntervalSince(lastTraceLog) > 4 {
                 lastTraceLog = Date()
-                await logScan("trace", scores: scores, strict: strict)
+                await logScan("trace", scores: scores, strict: strict, trace: true)
             }
 
             // A coarse look that the finer tiles inside it do not back up is the model misreading a busy screen.
@@ -173,23 +173,27 @@ public final class ScreenImageScanner {
                 // the model made of a picture it missed, and what the stricter rules held back.
                 if (scores.max() ?? 0) >= ImageScanLogic.noteScore, Date().timeIntervalSince(lastIgnoredLog) > 20 {
                     lastIgnoredLog = Date()
-                    let note: String
-                    if supported != scores {
-                        note = "held back, the finer tiles do not agree"
-                    } else {
-                        note = strict ? "below the strict search-page bar" : "below the bar, not acted on"
-                    }
-                    await logScan("mid-score (\(note))", scores: scores, strict: strict)
+                    let heldBack = supported != scores
+                    await recordImageEvent(outcome: .nearMiss, nearMiss: heldBack ? .heldBack : .belowBar,
+                                           scores: scores, decided: supported, strict: strict,
+                                           bodyParts: await findBodyParts(image, scores: heldBack ? scores : supported))
                 }
                 suspectPending = false
             case .suspect:
-                if !suspectPending { await logScan("suspect", scores: scores, strict: strict) }
+                if !suspectPending {
+                    await recordImageEvent(outcome: .nearMiss, nearMiss: .recheck, scores: scores, decided: supported, strict: strict)
+                }
                 suspectPending = true
             case .explicit:
-                await logScan("EXPLICIT, tab closed", scores: scores, strict: strict)
+                // What was in front, before closing it changes that.
+                let context = await frontContext()
                 suspectPending = false
                 lastThumbnails.removeAll()
+                // Closing comes first; working out and writing down why takes a moment longer.
                 await respond()
+                await recordImageEvent(outcome: .blocked, scores: scores, decided: supported, strict: strict,
+                                       context: context, looksLike: describePicture(image, scores: supported),
+                                       bodyParts: await findBodyParts(image, scores: supported))
                 return
             }
         }
@@ -342,17 +346,76 @@ public final class ScreenImageScanner {
 
     // MARK: - Log
 
-    /// Writes what the model saw to the block log (`blocks.log`): the highest score and the tile it came from,
-    /// every score (whole screen, then the 2x2 grid, then the 3x3 grid, each row by row), which app and page
-    /// were in front, and whether the strict search-page bar applied.
-    private func logScan(_ what: String, scores: [Double], strict: Bool) async {
-        let (page, app) = await MainActor.run {
+    /// The app and page in front right now.
+    private func frontContext() async -> (page: String?, app: String) {
+        await MainActor.run {
             (BrowserMonitor.shared.frontPageURL, NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")
         }
+    }
+
+    /// One scan's scores for the tuning trace (`scan-trace.log`): the highest score and its tile, every score
+    /// (whole screen, then the 2x2 grid, then the 3x3 grid, each row by row), the app and page in front, and
+    /// whether the strict search-page bars applied.
+    private func logScan(_ what: String, scores: [Double], strict: Bool, trace: Bool = false) async {
+        let front = await frontContext()
         let list = scores.map { String(format: "%.3f", $0) }.joined(separator: " ")
         let top = scores.max() ?? 0
         let topTile = scores.firstIndex(of: top) ?? 0
-        BlockLog.record("image-scanner", "\(what)  top=\(String(format: "%.4f", top)) tile=\(topTile)  scores(whole | 2x2 | 3x3)=[\(list)]  strict=\(strict)  app=\(app)  page=\(BlockLog.describePage(page))")
+        BlockLog.record("image-scanner", "\(what)  top=\(String(format: "%.4f", top)) tile=\(topTile)  scores(whole | 2x2 | 3x3)=[\(list)]  strict=\(strict)  app=\(front.app)  page=\(BlockLog.describePage(front.page))", trace: trace)
+    }
+
+    /// Records a block, or a high score that was not acted on, in the block log with its full explanation.
+    /// `decided` are the scores the verdict used (a coarse hit the finer tiles did not back up is zeroed there).
+    private func recordImageEvent(outcome: BlockEvent.Outcome, nearMiss: ImageScanLogic.NearMiss? = nil,
+                                  scores: [Double], decided: [Double], strict: Bool,
+                                  context: (page: String?, app: String)? = nil, looksLike: String = "",
+                                  bodyParts: [BodyPartLogic.Detection]? = nil) async {
+        let front: (page: String?, app: String)
+        if let context = context { front = context } else { front = await frontContext() }
+        let action: String
+        if outcome == .nearMiss {
+            action = "Nothing closed"
+        } else if BrowserLockdown.isMonitored(front.app) {
+            action = "Tab closed"
+        } else {
+            action = "App hidden"
+        }
+        BlockLog.record(BlockEvent.image(
+            outcome: outcome, nearMiss: nearMiss, scores: scores, decided: decided, strict: strict, looksLike: looksLike,
+            bodyParts: bodyParts, action: action, page: front.page.map { BlockLog.describePage($0) }, app: front.app
+        ))
+    }
+
+    /// The part of the screen that scored highest, cut out of the screenshot.
+    private func topTileCrop(_ image: CGImage, scores: [Double]) -> CGImage? {
+        guard let top = scores.max(), let index = scores.firstIndex(of: top) else { return nil }
+        let tiles = ImageScanLogic.tiles(width: image.width, height: image.height)
+        guard index < tiles.count else { return nil }
+        let tile = tiles[index]
+        return image.cropping(to: CGRect(x: tile.x, y: tile.y, width: tile.width, height: tile.height))
+    }
+
+    /// What the body-part detector finds in the part of the screen that scored highest: nil when its model is not
+    /// installed, an empty list when it looked and found nothing. Like `describePicture` it only runs when
+    /// something is logged, and nothing is kept but the labels.
+    private func findBodyParts(_ image: CGImage, scores: [Double]) async -> [BodyPartLogic.Detection]? {
+        guard BodyPartDetector.shared.isInstalled, let crop = topTileCrop(image, scores: scores) else { return nil }
+        return await BodyPartDetector.shared.detect(in: crop)
+    }
+
+    /// What a general-purpose picture classifier (Apple's, built into macOS; not the explicit-content model)
+    /// makes of the part of the screen that scored highest, as `person 93%, swimwear 41%`. Run only when
+    /// something is blocked, so it costs no battery. Labels only: the picture itself is never kept.
+    private func describePicture(_ image: CGImage, scores: [Double]) -> String {
+        guard let top = scores.max(), let index = scores.firstIndex(of: top) else { return "" }
+        let tiles = ImageScanLogic.tiles(width: image.width, height: image.height)
+        guard index < tiles.count else { return "" }
+        let tile = tiles[index]
+        guard let crop = image.cropping(to: CGRect(x: tile.x, y: tile.y, width: tile.width, height: tile.height)) else { return "" }
+        let request = VNClassifyImageRequest()
+        do { try VNImageRequestHandler(cgImage: crop, options: [:]).perform([request]) } catch { return "" }
+        let observations = request.results ?? []
+        return ImageScanLogic.describeLabels(observations.map { (name: $0.identifier, confidence: Double($0.confidence)) })
     }
 
     // MARK: - Response

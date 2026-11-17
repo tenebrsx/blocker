@@ -57,6 +57,9 @@ SOURCES=(
     "Sources/Core/AdultDomainList.swift"
     "Sources/Core/AdultContentScorer.swift"
     "Sources/Core/BrowserLockdown.swift"
+    "Sources/Core/BodyPartLogic.swift"
+    "Sources/Core/BodyPartDetector.swift"
+    "Sources/Core/BlockEvent.swift"
     "Sources/Core/BlockLog.swift"
     "Sources/Core/ImageScanLogic.swift"
     "Sources/Core/ScreenImageScanner.swift"
@@ -70,6 +73,7 @@ SOURCES=(
     "Sources/UI/MathChallengeController.swift"
     "Sources/UI/PopupNoteController.swift"
     "Sources/UI/SettingsWindowController.swift"
+    "Sources/UI/BlockLogWindowController.swift"
     "Sources/UI/MenuBarController.swift"
     "Sources/Main.swift"
 )
